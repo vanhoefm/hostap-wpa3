@@ -370,6 +370,9 @@ CONFIG_IPV6=y
 # Experimental implementation of draft-harkins-owe-07.txt
 #CONFIG_OWE=y
 
+# Enable WPA3's SAE handshake
+CONFIG_SAE=y
+
 # Override default value for the wpa_disable_eapol_key_retries configuration
 # parameter. See that parameter in hostapd.conf for more details.
 #CFLAGS += -DDEFAULT_WPA_DISABLE_EAPOL_KEY_RETRIES=1
