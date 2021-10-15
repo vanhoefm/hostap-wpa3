@@ -1,3 +1,14 @@
+# Prerequisites
+
+First install some dependencies:
+
+	# Kali Linux and Ubuntu:
+	sudo apt-get update
+	sudo apt-get install libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libssl-dev \
+		libdbus-1-dev git pkg-config build-essential macchanger net-tools python3-venv \
+		aircrack-ng rfkill
+
+
 # Compiling the AP and Client
 
 First compile hostapd:
@@ -14,16 +25,37 @@ Now compile `wpa_supplicant`:
 	make -j 2
 	cd ..
 
-# Testing WPA3 with Virtual Wi-Fi Interfaces
 
-To **test WPA3 using virtual Wi-Fi interfaces**, you can execute the following commands. Note that
-you will first have to disable your network manager (or disable Wi-Fi) so your operating system
-will not interfere with our simulations.
+# Testing Using Virtual Interface
+
+## 1.  Create Virtual Wi-Fi Interface
+
+First create the virtual interfaces
 
 	sudo modprobe mac80211_hwsim radios=3
-	rfkill unblock wifi
 
-	# Optionally kill other Wi-Fi clients the brute-for way:
+
+## 2. Disable Wi-Fi in the Network Manager
+
+Disable Wi-Fi in the network manager so your operating system won't interfere with our Wi-Fi tests.
+
+Alternatively, you can blacklist the MAC address of your
+Wi-Fi dongle so that Linux will automatically ignore the Wi-Fi dongle. This is done by adding
+the [following lines](https://wiki.archlinux.org/index.php/NetworkManager#Ignore_specific_devices)
+to the file `/etc/NetworkManager/NetworkManager.conf`:
+
+	[keyfile]
+	unmanaged-devices=mac:02:00:00:00:00:00
+
+Replace `02:00:00:00:00:00` with the MAC addess of your (virtual) Wi-Fi dongle and then reboot Kali.
+
+
+## 3. Start the client and AP
+
+	# Manually enable Wi-Fi for our client and AP
+	sudo rfkill unblock wifi
+
+	# Optionally kill other Wi-Fi clients the brute-force way:
 	#sudo pkill wpa_supplicant
 
 	# Open a new terminal, and in the directory hostapd execute:
