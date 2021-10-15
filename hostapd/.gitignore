@@ -3,3 +3,4 @@ hostapd
 hostapd_cli
 hlr_auc_gw
 nt_password_hash
+sae_pk_gen

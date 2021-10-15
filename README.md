@@ -26,6 +26,31 @@ Now compile `wpa_supplicant`:
 	cd ..
 
 
+# Configuring SAE-PK
+
+First generate a private key:
+
+	openssl ecparam -name prime256v1 -genkey -noout -out example_key.der -outform der
+
+Now derive the password from it:
+
+	cd hostapd
+	make sae_pk_gen
+	./sae_pk_gen example_key.der 3 SAEPK-Network
+
+Example output:
+
+	...
+	sae_password=2udb-slxf-3ij2|pk=04e8aad54d1a121955e8703d1dfa115e:MHcCAQEEIKMP3SZEAlW9rSwTFsaR/sEyX963opsOo2QYe4G8Kcl+oAoGCCqGSM49AwEHoUQDQgAE4GuxyTkKNt0MEispu/XPxImInj+tl2ri/Jfu2mOQKb1TdNHSPs6UP+rxv5OWnezhOpjpD63Y+zjjz1yk7/iF7g==
+	# Longer passwords can be used for improved security at the cost of usability:
+	# 2udb-slxf-3ijn-y65k
+	# 2udb-slxf-3ijn-y65x-vr2e
+	# 2udb-slxf-3ijn-y65x-vr2i-6qob
+	...
+
+The example config files `hostapd_sae_pk.conf` and `supp_saepk.conf` can be used to create the SAE-PK network.
+
+
 # Testing Using Virtual Interface
 
 ## 1.  Create Virtual Wi-Fi Interface

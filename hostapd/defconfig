@@ -253,7 +253,7 @@ CONFIG_IPV6=y
 # Should we attempt to use the getrandom(2) call that provides more reliable
 # yet secure randomness source than /dev/random on Linux 3.17 and newer.
 # Requires glibc 2.25 to build, falls back to /dev/random if unavailable.
-#CONFIG_GETRANDOM=y
+CONFIG_GETRANDOM=y
 
 # Should we use poll instead of select? Select is used by default.
 #CONFIG_ELOOP_POLL=y
@@ -376,6 +376,10 @@ CONFIG_IPV6=y
 
 # Enable WPA3's SAE handshake
 CONFIG_SAE=y
+
+# Enable SAE-PK. We also enable DPP so required dependencies are properly compiled.
+CONFIG_SAE_PK=y
+CONFIG_DPP=y
 
 # Airtime policy support
 #CONFIG_AIRTIME_POLICY=y
