@@ -4,13 +4,14 @@
 # This software may be distributed under the terms of the BSD license.
 # See README for more details.
 
+import hostapd
 from remotehost import remote_compatible
 import time
 import logging
 logger = logging.getLogger()
 
 import hwsim_utils
-from utils import HwsimSkip, alloc_fail
+from utils import *
 from wpasupplicant import WpaSupplicant
 from test_p2p_channel import set_country
 
@@ -49,7 +50,7 @@ def test_wpas_ap_open(dev):
 
     addr1 = dev[1].p2p_interface_addr()
     addr2 = dev[2].p2p_interface_addr()
-    addrs = [ addr1, addr2 ]
+    addrs = [addr1, addr2]
     sta = dev[0].get_sta(None)
     if sta['addr'] not in addrs:
         raise Exception("Unexpected STA address")
@@ -103,6 +104,7 @@ def test_wpas_ap_open_isolate(dev):
 @remote_compatible
 def test_wpas_ap_wep(dev):
     """wpa_supplicant AP mode - WEP"""
+    check_wep_capa(dev[0])
     id = dev[0].add_network()
     dev[0].set_network(id, "mode", "2")
     dev[0].set_network_quoted(id, "ssid", "wpas-ap-wep")
@@ -382,8 +384,9 @@ def _test_wpas_ap_dfs(dev):
         raise Exception("AP failed to start")
 
     dev[1].connect("wpas-ap-dfs", key_mgmt="NONE")
-    dev[1].request("DISCONNECT")
-    dev[1].wait_disconnected()
+    dev[1].wait_regdom(country_ie=True)
+    dev[0].request("DISCONNECT")
+    dev[1].disconnect_and_stop_scan()
 
 @remote_compatible
 def test_wpas_ap_disable(dev):
@@ -494,7 +497,7 @@ def test_wpas_ap_failures(dev):
     dev[0].set_network(id, "frequency", "2412")
     dev[0].set_network(id, "scan_freq", "2412")
     dev[0].select_network(id)
-    ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED" ], timeout=0.1)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=0.1)
     if ev is not None:
         raise Exception("Unexpected connection event")
     dev[0].request("REMOVE_NETWORK all")
@@ -509,8 +512,8 @@ def test_wpas_ap_failures(dev):
     dev[0].set_network(id, "scan_freq", "2412")
     dev[0].set_network(id, "pbss", "2")
     dev[0].select_network(id)
-    ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED",
-                             "CTRL-EVENT-DISCONNECTED" ], timeout=0.1)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED",
+                            "CTRL-EVENT-DISCONNECTED"], timeout=0.1)
     if ev is not None and "CTRL-EVENT-CONNECTED" in ev:
         raise Exception("Unexpected connection event(2)")
     dev[0].request("REMOVE_NETWORK all")
@@ -539,17 +542,18 @@ def test_wpas_ap_oom(dev):
         dev[0].wait_disconnected()
     dev[0].request("REMOVE_NETWORK all")
 
-    id = dev[0].add_network()
-    dev[0].set_network(id, "mode", "2")
-    dev[0].set_network_quoted(id, "ssid", "wpas-ap")
-    dev[0].set_network(id, "key_mgmt", "NONE")
-    dev[0].set_network_quoted(id, "wep_key0", "hello")
-    dev[0].set_network(id, "frequency", "2412")
-    dev[0].set_network(id, "scan_freq", "2412")
-    with alloc_fail(dev[0], 1, "=wpa_supplicant_conf_ap"):
-        dev[0].select_network(id)
-        dev[0].wait_disconnected()
-    dev[0].request("REMOVE_NETWORK all")
+    if "WEP40" in dev[0].get_capability("group"):
+        id = dev[0].add_network()
+        dev[0].set_network(id, "mode", "2")
+        dev[0].set_network_quoted(id, "ssid", "wpas-ap")
+        dev[0].set_network(id, "key_mgmt", "NONE")
+        dev[0].set_network_quoted(id, "wep_key0", "hello")
+        dev[0].set_network(id, "frequency", "2412")
+        dev[0].set_network(id, "scan_freq", "2412")
+        with alloc_fail(dev[0], 1, "=wpa_supplicant_conf_ap"):
+            dev[0].select_network(id)
+            dev[0].wait_disconnected()
+        dev[0].request("REMOVE_NETWORK all")
 
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5")
@@ -570,8 +574,8 @@ def test_wpas_ap_oom(dev):
     for i in range(5):
         with alloc_fail(wpas, i, "=wpa_supplicant_conf_ap"):
             wpas.select_network(id)
-            ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED",
-                                     "CTRL-EVENT-DISCONNECTED" ], timeout=1)
+            ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED",
+                                    "CTRL-EVENT-DISCONNECTED"], timeout=1)
         wpas.request("DISCONNECT")
         wpas.wait_disconnected()
 
@@ -760,5 +764,164 @@ def test_wpas_ap_async_fail(dev):
             dev[0].select_network(id)
             dev[0].wait_disconnected()
     finally:
-        set_country("00")
-        dev[0].set("country", "00")
+        clear_regdom_dev(dev)
+
+def test_wpas_ap_sae(dev):
+    """wpa_supplicant AP mode - SAE using psk"""
+    run_wpas_ap_sae(dev, False)
+
+def test_wpas_ap_sae_password(dev):
+    """wpa_supplicant AP mode - SAE using sae_password"""
+    run_wpas_ap_sae(dev, True)
+
+def test_wpas_ap_sae_pwe_1(dev):
+    """wpa_supplicant AP mode - SAE using sae_password and sae_pwe=1"""
+    try:
+        dev[0].set("sae_pwe", "1")
+        dev[1].set("sae_pwe", "1")
+        run_wpas_ap_sae(dev, True, sae_password_id=True)
+    finally:
+        dev[0].set("sae_pwe", "0")
+        dev[1].set("sae_pwe", "0")
+
+def run_wpas_ap_sae(dev, sae_password, sae_password_id=False):
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    if "SAE" not in dev[1].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    dev[0].request("SET sae_groups ")
+    id = dev[0].add_network()
+    dev[0].set_network(id, "mode", "2")
+    dev[0].set_network_quoted(id, "ssid", "wpas-ap-sae")
+    dev[0].set_network(id, "proto", "WPA2")
+    dev[0].set_network(id, "key_mgmt", "SAE")
+    dev[0].set_network(id, "pairwise", "CCMP")
+    dev[0].set_network(id, "group", "CCMP")
+    if sae_password:
+        dev[0].set_network_quoted(id, "sae_password", "12345678")
+    else:
+        dev[0].set_network_quoted(id, "psk", "12345678")
+    if sae_password_id:
+        pw_id = "pw id"
+        dev[0].set_network_quoted(id, "sae_password_id", pw_id)
+    else:
+        pw_id = None
+    dev[0].set_network(id, "frequency", "2412")
+    dev[0].set_network(id, "scan_freq", "2412")
+    dev[0].set_network(id, "wps_disabled", "1")
+    dev[0].select_network(id)
+    wait_ap_ready(dev[0])
+
+    dev[1].request("SET sae_groups ")
+    dev[1].connect("wpas-ap-sae", key_mgmt="SAE", sae_password="12345678",
+                   sae_password_id=pw_id, scan_freq="2412")
+
+def test_wpas_ap_scan(dev, apdev):
+    """wpa_supplicant AP mode and scanning"""
+    dev[0].flush_scan_cache()
+
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
+    bssid = hapd.own_addr()
+
+    id = dev[0].add_network()
+    dev[0].set_network(id, "mode", "2")
+    dev[0].set_network_quoted(id, "ssid", "wpas-ap-open")
+    dev[0].set_network(id, "key_mgmt", "NONE")
+    dev[0].set_network(id, "frequency", "2412")
+    dev[0].set_network(id, "scan_freq", "2412")
+    dev[0].select_network(id)
+    wait_ap_ready(dev[0])
+    dev[0].dump_monitor()
+
+    if "OK" not in dev[0].request("SCAN freq=2412"):
+        raise Exception("SCAN command not accepted")
+    ev = dev[0].wait_event(["CTRL-EVENT-SCAN-RESULTS",
+                            "CTRL-EVENT-SCAN-FAILED"], 15)
+    if ev is None:
+        raise Exception("Scan result timed out")
+    if "CTRL-EVENT-SCAN-FAILED ret=-95" in ev:
+        # Scanning in AP mode not supported
+        return
+    if "CTRL-EVENT-SCAN-FAILED" in ev:
+        raise Exception("Unexpected scan failure reason: " + ev)
+    if "CTRL-EVENT-SCAN-RESULTS" in ev:
+        bss = dev[0].get_bss(bssid)
+        if not bss:
+            raise Exception("AP not found in scan")
+
+def test_wpas_ap_sae(dev):
+    """wpa_supplicant AP mode - SAE using psk"""
+    run_wpas_ap_sae(dev, False)
+
+def test_wpas_ap_sae_and_psk_transition_disable(dev):
+    """wpa_supplicant AP mode - SAE+PSK transition disable indication"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    if "SAE" not in dev[1].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    dev[0].set("sae_groups", "")
+    id = dev[0].add_network()
+    dev[0].set_network(id, "mode", "2")
+    dev[0].set_network_quoted(id, "ssid", "wpas-ap-sae")
+    dev[0].set_network(id, "proto", "WPA2")
+    dev[0].set_network(id, "key_mgmt", "SAE")
+    dev[0].set_network(id, "transition_disable", "1")
+    dev[0].set_network(id, "ieee80211w", "1")
+    dev[0].set_network(id, "pairwise", "CCMP")
+    dev[0].set_network(id, "group", "CCMP")
+    dev[0].set_network_quoted(id, "psk", "12345678")
+    dev[0].set_network(id, "frequency", "2412")
+    dev[0].set_network(id, "scan_freq", "2412")
+    dev[0].set_network(id, "wps_disabled", "1")
+    dev[0].select_network(id)
+    wait_ap_ready(dev[0])
+
+    dev[1].set("sae_groups", "")
+    dev[1].connect("wpas-ap-sae", key_mgmt="SAE WPA-PSK",
+                   psk="12345678", ieee80211w="1",
+                   scan_freq="2412")
+    ev = dev[1].wait_event(["TRANSITION-DISABLE"], timeout=1)
+    if ev is None:
+        raise Exception("Transition disable not indicated")
+    if ev.split(' ')[1] != "01":
+        raise Exception("Unexpected transition disable bitmap: " + ev)
+
+    val = dev[1].get_network(id, "ieee80211w")
+    if val != "2":
+        raise Exception("Unexpected ieee80211w value: " + val)
+    val = dev[1].get_network(id, "key_mgmt")
+    if val != "SAE":
+        raise Exception("Unexpected key_mgmt value: " + val)
+    val = dev[1].get_network(id, "group")
+    if val != "CCMP":
+        raise Exception("Unexpected group value: " + val)
+    val = dev[1].get_network(id, "proto")
+    if val != "RSN":
+        raise Exception("Unexpected proto value: " + val)
+
+    dev[1].request("DISCONNECT")
+    dev[1].wait_disconnected()
+    dev[1].request("RECONNECT")
+    dev[1].wait_connected()
+
+def test_wpas_ap_vendor_elems(dev):
+    """wpa_supplicant AP mode - vendor elements"""
+    id = dev[0].add_network()
+    dev[0].set_network(id, "mode", "2")
+    dev[0].set_network_quoted(id, "ssid", "wpas-ap-open")
+    dev[0].set_network(id, "key_mgmt", "NONE")
+    dev[0].set_network(id, "frequency", "2412")
+    dev[0].set_network(id, "scan_freq", "2412")
+    dev[0].select_network(id)
+    wait_ap_ready(dev[0])
+
+    beacon_elems = "dd0411223301"
+    dev[0].set("ap_vendor_elements", beacon_elems)
+    dev[0].set("ap_assocresp_elements", "dd0411223302")
+    if "OK" not in dev[0].request("UPDATE_BEACON"):
+        raise Exception("UPDATE_BEACON failed")
+
+    dev[1].connect("wpas-ap-open", key_mgmt="NONE", scan_freq="2412")
+    bss = dev[1].get_bss(dev[0].own_addr())
+    if beacon_elems not in bss['ie']:
+        raise Exception("Vendor element not visible in scan results")

@@ -323,6 +323,24 @@ fi.w1.wpa_supplicant1.CreateInterface.
       </li>
 
       <li>
+	<h3>Roam ( s : addr ) --> nothing</h3>
+	<p>Initiate a roam to another BSS within the current ESS.</p>
+	<h4>Possible errors</h4>
+	<dl>
+	  <dt>fi.w1.wpa_supplicant1.InvalidArgs</dt>
+	  <dd>Missing address argument.</dd>
+	  <dt>fi.w1.wpa_supplicant1.InvalidArgs</dt>
+	  <dd>Invalid hardware address format.</dd>
+	  <dt>fi.w1.wpa_supplicant1.InvalidArgs</dt>
+	  <dd>Target BSS not found.</dd>
+	  <dt>fi.w1.wpa_supplicant1.NotConnected</dt>
+	  <dd>Interface is not connected to any network.</dd>
+	  <dt>fi.w1.wpa_supplicant1.UnknownError</dt>
+	  <dd>Scan processing was not included in the build.</dd>
+	</dl>
+      </li>
+
+      <li>
 	<h3>AddBlob ( s : name, ay : data ) --> nothing</h3>
 	<p>Adds a blob to the interface.</p>
 	<h4>Arguments</h4>
@@ -651,7 +669,7 @@ fi.w1.wpa_supplicant1.CreateInterface.
 	  <tr><td>Pairwise</td><td>as</td><td>Possible array elements: "ccmp-256", "gcmp-256", "ccmp", "gcmp", "tkip", "none"</td>
 	  <tr><td>Group</td><td>as</td><td>Possible array elements: "ccmp-256", "gcmp-256", "ccmp", "gcmp", "tkip", "wep104", "wep40"</td>
 	  <tr><td>GroupMgmt</td><td>as</td><td>Possible array elements: "aes-128-cmac", "bip-gmac-128", "bip-gmac-256", "bip-cmac-256"</td>
-	  <tr><td>KeyMgmt</td><td>as</td><td>Possible array elements: "wpa-psk", "wpa-ft-psk", "wpa-psk-sha256", "wpa-eap", "wpa-ft-eap", "wpa-eap-sha256", "ieee8021x", "wpa-none", "wps", "none"</td>
+	  <tr><td>KeyMgmt</td><td>as</td><td>Possible array elements: "wpa-psk", "wpa-ft-psk", "wpa-psk-sha256", "wpa-eap", "wpa-ft-eap", "wpa-eap-sha256", "sae", "owe", "ieee8021x", "wpa-none", "wps", "none"</td>
 	  <tr><td>Protocol</td><td>as</td><td>Possible array elements: "rsn", "wpa"</td>
 	  <tr><td>AuthAlg</td><td>as</td><td>Possible array elements: "open", "shared", "leap"</td>
 	  <tr><td>Scan</td><td>as</td><td>Possible array elements: "active", "passive", "ssid"</td>
@@ -735,6 +753,11 @@ fi.w1.wpa_supplicant1.CreateInterface.
       </li>
 
       <li>
+	<h3>Stations - ao - (read)</h3>
+	<p>List of D-Bus objects paths representing connected stations in AP mode.</p>
+      </li>
+
+      <li>
 	<h3>Networks - ao - (read)</h3>
 	<p>List of D-Bus objects paths representing configured networks.</p>
       </li>
@@ -765,8 +788,33 @@ fi.w1.wpa_supplicant1.CreateInterface.
       </li>
 
       <li>
+	<h3>AuthStatusCode - i - (read)</h3>
+	<p>The most recent IEEE 802.11 status code for authentication.</p>
+      </li>
+
+      <li>
 	<h3>AssocStatusCode - i - (read)</h3>
 	<p>The most recent IEEE 802.11 status code for association rejection.</p>
+      </li>
+
+      <li>
+	<h3>RoamTime - u - (read)</h3>
+	<p>The most recent roam time in milliseconds.</p>
+      </li>
+
+      <li>
+	<h3>RoamComplete - b - (read)</h3>
+	<p>The most recent roam success or failure.</p>
+      </li>
+
+      <li>
+	<h3>SessionLength - u - (read)</h3>
+	<p>The most recent BSS session length in milliseconds.</p>
+      </li>
+
+      <li>
+	<h3>BSSTMStatus - u - (read)</h3>
+	<p>The most recent BSS Transition Management status code.</p>
       </li>
 
       <li>
@@ -861,7 +909,7 @@ fi.w1.wpa_supplicant1.CreateInterface.
 
       <li>
 	<h3>Hessid - s - (read/write)</h3>
-	<p>Homogenous ESS identifier</p>
+	<p>Homogeneous ESS identifier</p>
       </li>
 
       <li>
@@ -1013,6 +1061,12 @@ fi.w1.wpa_supplicant1.CreateInterface.
 	<h3>WpsPriority - s - (read/write)</h3>
 	<p>Priority for the networks added through WPS</p>
       </li>
+
+      <li>
+	<h3>MACAddressRandomizationMask - a{say} - (read/write)</h3>
+	<p>Masks to show which bits not to randomize with MAC address randomization. Possible keys are "scan", "sched_scan", and "pno". Values must be an array of 6 bytes.</p>
+	<p>When this property is set, the new dictionary replaces the old value, rather than merging them together. Leaving a key out of the dictionary will turn off MAC address randomization for that scan type.</p>
+      </li>
     </ul>
 
 \subsection dbus_interface_signals Signals
@@ -1123,6 +1177,32 @@ fi.w1.wpa_supplicant1.CreateInterface.
 	<dl>
 	  <dt>s : mac</dt>
 	  <dd>A mac address which has been deauthorized.</dd>
+	</dl>
+      </li>
+
+      <li>
+	<h3>StationAdded ( o : Station, a{sv} : properties )</h3>
+	<p>A new station has been added to the interface.</p>
+	<p>This signal complements StaAuthorized, passing the Station object and its properties.</p>
+	<h4>Arguments</h4>
+	<dl>
+	  <dt>o : Station</dt>
+	  <dd>A D-Bus path to an object representing the new Station.</dd>
+	</dl>
+	<dl>
+	  <dt>a{sv} : properties</dt>
+	  <dd>A dictionary containing properties of added Station.</dd>
+	</dl>
+      </li>
+
+      <li>
+	<h3>StationRemoved ( o : Station )</h3>
+	<p>The station has been removed from the interface.</p>
+	<p>This signal complements StaDeauthorized, passing the Station object.</p>
+	<h4>Arguments</h4>
+	<dl>
+	  <dt>o : Station</dt>
+	  <dd>A D-Bus path to an object representing the Station.</dd>
 	</dl>
       </li>
 
@@ -1972,10 +2052,10 @@ scan results.
 	<h3>RSN - a{sv} - (read)</h3>
 	<p>RSN information of the BSS. Empty dictionary indicates no RSN support. Dictionary entries are:</p>
 	<table>
-	  <tr><td>KeyMgmt</td><td>as</td><td>Key management suite. Possible array elements: "wpa-psk", "wpa-eap", "wpa-ft-psk", "wpa-ft-eap", "wpa-psk-sha256", "wpa-eap-sha256",</td>
+	  <tr><td>KeyMgmt</td><td>as</td><td>Key management suite. Possible array elements: "wpa-psk", "wpa-ft-psk", "wpa-psk-sha256", "wpa-eap", "wpa-ft-eap", "wpa-eap-sha256", "wpa-eap-suite-b", "wpa-eap-suite-b-192", "wpa-fils-sha256", "wpa-fils-sha384", "wpa-ft-fils-sha256", "wpa-ft-fils-sha384", "sae", "ft-sae", "wpa-none"</td>
 	  <tr><td>Pairwise</td><td>as</td><td>Pairwise cipher suites. Possible array elements: "ccmp", "tkip"</td>
 	  <tr><td>Group</td><td>s</td><td>Group cipher suite. Possible values are: "ccmp", "tkip", "wep104", "wep40"</td>
-	  <tr><td>MgmtGroup</td><td>s</td><td>Mangement frames cipher suite. Possible values are: "aes128cmac"</td>
+	  <tr><td>MgmtGroup</td><td>s</td><td>Management frames cipher suite. Possible values are: "aes128cmac"</td>
 	</table>
       </li>
       <li>
@@ -2045,7 +2125,7 @@ i.e., returned by fi.w1.wpa_supplicant1.Interface.AddNetwork.
 
       <li>
 	<h3>Properties - a{sv} - (read/write)</h3>
-	<p>Properties of the configured network. Dictionary contains entries from "network" block of wpa_supplicant configuration file. All values are string type, e.g., frequency is "2437", not 2437.
+	<p>Properties of the configured network. Dictionary contains entries from "network" block of wpa_supplicant configuration file. All values are string type, e.g., frequency is "2437", not 2437. When setting the properties, use the same format as for the AddNetwork() function.</p>
       </li>
     </ul>
 

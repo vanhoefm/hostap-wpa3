@@ -16,6 +16,7 @@
 #include <openssl/asn1t.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <openssl/opensslv.h>
 #ifdef OPENSSL_IS_BORINGSSL
 #include <openssl/buf.h>
 #endif /* OPENSSL_IS_BORINGSSL */
@@ -157,7 +158,7 @@ int est_load_cacerts(struct hs20_osu_client *ctx, const char *url)
 		return -1;
 	}
 
-	pkcs7 = base64_decode((unsigned char *) resp, resp_len, &pkcs7_len);
+	pkcs7 = base64_decode(resp, resp_len, &pkcs7_len);
 	if (pkcs7 && pkcs7_len < resp_len / 2) {
 		wpa_printf(MSG_INFO, "Too short base64 decode (%u bytes; downloaded %u bytes) - assume this was binary",
 			   (unsigned int) pkcs7_len, (unsigned int) resp_len);
@@ -218,6 +219,10 @@ typedef struct {
 		Attribute *attribute;
 	} d;
 } AttrOrOID;
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(OPENSSL_IS_BORINGSSL)
+DEFINE_STACK_OF(AttrOrOID)
+#endif
 
 typedef struct {
 	int type;
@@ -352,9 +357,17 @@ static void add_csrattrs(struct hs20_osu_client *ctx, CsrAttrs *csrattrs,
 		}
 	}
 #else /* OPENSSL_IS_BORINGSSL */
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(OPENSSL_IS_BORINGSSL)
+	num = sk_AttrOrOID_num(csrattrs->attrs);
+#else
 	num = SKM_sk_num(AttrOrOID, csrattrs->attrs);
+#endif
 	for (i = 0; i < num; i++) {
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(OPENSSL_IS_BORINGSSL)
+		AttrOrOID *ao = sk_AttrOrOID_value(csrattrs->attrs, i);
+#else
 		AttrOrOID *ao = SKM_sk_value(AttrOrOID, csrattrs->attrs, i);
+#endif
 		switch (ao->type) {
 		case 0:
 			add_csrattrs_oid(ctx, ao->d.oid, exts);
@@ -626,8 +639,7 @@ int est_build_csr(struct hs20_osu_client *ctx, const char *url)
 			return -1;
 		}
 
-		attrs = base64_decode((unsigned char *) resp, resp_len,
-				      &attrs_len);
+		attrs = base64_decode(resp, resp_len, &attrs_len);
 		os_free(resp);
 
 		if (attrs == NULL) {
@@ -721,7 +733,7 @@ int est_simple_enroll(struct hs20_osu_client *ctx, const char *url,
 	}
 	wpa_printf(MSG_DEBUG, "EST simpleenroll response: %s", resp);
 
-	pkcs7 = base64_decode((unsigned char *) resp, resp_len, &pkcs7_len);
+	pkcs7 = base64_decode(resp, resp_len, &pkcs7_len);
 	if (pkcs7 == NULL) {
 		wpa_printf(MSG_INFO, "EST workaround - Could not decode base64, assume this is DER encoded PKCS7");
 		pkcs7 = os_malloc(resp_len);

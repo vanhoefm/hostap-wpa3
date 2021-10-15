@@ -158,16 +158,6 @@ struct p2p_sd_query {
 	struct wpabuf *tlvs;
 };
 
-struct p2p_pending_action_tx {
-	unsigned int freq;
-	u8 dst[ETH_ALEN];
-	u8 src[ETH_ALEN];
-	u8 bssid[ETH_ALEN];
-	size_t len;
-	unsigned int wait_time;
-	/* Followed by len octets of the frame */
-};
-
 /**
  * struct p2p_data - P2P module data (internal to P2P module)
  */
@@ -449,8 +439,6 @@ struct p2p_data {
 		P2P_AFTER_SCAN_CONNECT
 	} start_after_scan;
 	u8 after_scan_peer[ETH_ALEN];
-	struct p2p_pending_action_tx *after_scan_tx;
-	unsigned int after_scan_tx_in_progress:1;
 	unsigned int send_action_in_progress:1;
 
 	/* Requested device types for find/search */
@@ -560,6 +548,9 @@ struct p2p_data {
 	/* Override option for preferred operating channel in GO Negotiation */
 	u8 override_pref_op_class;
 	u8 override_pref_channel;
+	bool p2p_6ghz_capable;
+	bool include_6ghz;
+	bool allow_6ghz;
 };
 
 /**
@@ -707,7 +698,11 @@ void p2p_channels_dump(struct p2p_data *p2p, const char *title,
 int p2p_channel_select(struct p2p_channels *chans, const int *classes,
 		       u8 *op_class, u8 *op_channel);
 int p2p_channel_random_social(struct p2p_channels *chans, u8 *op_class,
-			      u8 *op_channel);
+			      u8 *op_channel,
+			      struct wpa_freq_range_list *avoid_list,
+			      struct wpa_freq_range_list *disallow_list);
+void p2p_copy_channels(struct p2p_channels *dst, const struct p2p_channels *src,
+		       bool allow_6ghz);
 
 /* p2p_parse.c */
 void p2p_copy_filter_devname(char *dst, size_t dst_len,
@@ -794,7 +789,8 @@ void p2p_buf_add_persistent_group_info(struct wpabuf *buf, const u8 *dev_addr,
 int p2p_build_wps_ie(struct p2p_data *p2p, struct wpabuf *buf, int pw_id,
 		     int all_attr);
 void p2p_buf_add_pref_channel_list(struct wpabuf *buf,
-				   const u32 *preferred_freq_list, u32 size);
+				   const unsigned int *preferred_freq_list,
+				   unsigned int size);
 
 /* p2p_sd.c */
 struct p2p_sd_query * p2p_pending_sd_req(struct p2p_data *p2p,

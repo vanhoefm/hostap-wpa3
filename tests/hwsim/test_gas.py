@@ -36,19 +36,19 @@ def hs20_ap_params():
     params['uesa'] = "0"
     params['venue_group'] = "7"
     params['venue_type'] = "1"
-    params['venue_name'] = [ "eng:Example venue", "fin:Esimerkkipaikka" ]
-    params['roaming_consortium'] = [ "112233", "1020304050", "010203040506",
-                                     "fedcba" ]
+    params['venue_name'] = ["eng:Example venue", "fin:Esimerkkipaikka"]
+    params['roaming_consortium'] = ["112233", "1020304050", "010203040506",
+                                    "fedcba"]
     params['domain_name'] = "example.com,another.example.com"
-    params['nai_realm'] = [ "0,example.com,13[5:6],21[2:4][5:7]",
-                            "0,another.example.com" ]
+    params['nai_realm'] = ["0,example.com,13[5:6],21[2:4][5:7]",
+                           "0,another.example.com"]
     params['anqp_3gpp_cell_net'] = "244,91"
     params['network_auth_type'] = "02http://www.example.com/redirect/me/here/"
     params['ipaddr_type_availability'] = "14"
     params['hs20'] = "1"
-    params['hs20_oper_friendly_name'] = [ "eng:Example operator", "fin:Esimerkkioperaattori" ]
+    params['hs20_oper_friendly_name'] = ["eng:Example operator", "fin:Esimerkkioperaattori"]
     params['hs20_wan_metrics'] = "01:8000:1000:80:240:3000"
-    params['hs20_conn_capab'] = [ "1:0:2", "6:22:1", "17:5060:0" ]
+    params['hs20_conn_capab'] = ["1:0:2", "6:22:1", "17:5060:0"]
     params['hs20_operating_class'] = "5173"
     return params
 
@@ -110,18 +110,18 @@ def test_gas_generic(dev, apdev):
     params['hessid'] = bssid
     hostapd.add_ap(apdev[0], params)
 
-    cmds = [ "foo",
-             "00:11:22:33:44:55",
-             "00:11:22:33:44:55 ",
-             "00:11:22:33:44:55  ",
-             "00:11:22:33:44:55 1",
-             "00:11:22:33:44:55 1 1234",
-             "00:11:22:33:44:55 qq",
-             "00:11:22:33:44:55 qq 1234",
-             "00:11:22:33:44:55 00      1",
-             "00:11:22:33:44:55 00 123",
-             "00:11:22:33:44:55 00 ",
-             "00:11:22:33:44:55 00 qq" ]
+    cmds = ["foo",
+            "00:11:22:33:44:55",
+            "00:11:22:33:44:55 ",
+            "00:11:22:33:44:55  ",
+            "00:11:22:33:44:55 1",
+            "00:11:22:33:44:55 1 1234",
+            "00:11:22:33:44:55 qq",
+            "00:11:22:33:44:55 qq 1234",
+            "00:11:22:33:44:55 00      1",
+            "00:11:22:33:44:55 00 123",
+            "00:11:22:33:44:55 00 ",
+            "00:11:22:33:44:55 00 qq"]
     for cmd in cmds:
         if "FAIL" not in dev[0].request("GAS_REQUEST " + cmd):
             raise Exception("Invalid GAS_REQUEST accepted: " + cmd)
@@ -454,38 +454,57 @@ def test_gas_anqp_get(dev, apdev):
     if ev is None:
         raise Exception("GAS query timed out (2)")
 
-    cmds = [ "",
-             "foo",
-             "00:11:22:33:44:55 258,hs20:-1",
-             "00:11:22:33:44:55 258,hs20:0",
-             "00:11:22:33:44:55 258,hs20:32",
-             "00:11:22:33:44:55 hs20:-1",
-             "00:11:22:33:44:55 hs20:0",
-             "00:11:22:33:44:55 hs20:32",
-             "00:11:22:33:44:55 mbo:-1",
-             "00:11:22:33:44:55 mbo:0",
-             "00:11:22:33:44:55 mbo:999",
-             "00:11:22:33:44:55 mbo:1,258,mbo:2,mbo:3,259",
-             "00:11:22:33:44:55",
-             "00:11:22:33:44:55 ",
-             "00:11:22:33:44:55 0",
-             "00:11:22:33:44:55 1" ]
+    cmds = ["",
+            "foo",
+            "00:11:22:33:44:55 258,hs20:-1",
+            "00:11:22:33:44:55 258,hs20:0",
+            "00:11:22:33:44:55 258,hs20:32",
+            "00:11:22:33:44:55 hs20:-1",
+            "00:11:22:33:44:55 hs20:0",
+            "00:11:22:33:44:55 hs20:32",
+            "00:11:22:33:44:55 mbo:-1",
+            "00:11:22:33:44:55 mbo:0",
+            "00:11:22:33:44:55 mbo:999",
+            "00:11:22:33:44:55 mbo:1,258,mbo:2,mbo:3,259",
+            "00:11:22:33:44:55",
+            "00:11:22:33:44:55 ",
+            "00:11:22:33:44:55 0",
+            "00:11:22:33:44:55 1"]
     for cmd in cmds:
         if "FAIL" not in dev[0].request("ANQP_GET " + cmd):
             raise Exception("Invalid ANQP_GET accepted")
 
-    cmds = [ "",
-             "foo",
-             "00:11:22:33:44:55 -1",
-             "00:11:22:33:44:55 0",
-             "00:11:22:33:44:55 32",
-             "00:11:22:33:44:55",
-             "00:11:22:33:44:55 ",
-             "00:11:22:33:44:55 0",
-             "00:11:22:33:44:55 1" ]
+    cmds = ["",
+            "foo",
+            "00:11:22:33:44:55 -1",
+            "00:11:22:33:44:55 0",
+            "00:11:22:33:44:55 32",
+            "00:11:22:33:44:55",
+            "00:11:22:33:44:55 ",
+            "00:11:22:33:44:55 0",
+            "00:11:22:33:44:55 1"]
     for cmd in cmds:
         if "FAIL" not in dev[0].request("HS20_ANQP_GET " + cmd):
             raise Exception("Invalid HS20_ANQP_GET accepted")
+
+def test_gas_anqp_get_no_scan(dev, apdev):
+    """GAS/ANQP query without scan"""
+    hapd = start_ap(apdev[0])
+    bssid = apdev[0]['bssid']
+    if "OK" not in dev[0].request("ANQP_GET " + bssid + " freq=2412 258"):
+        raise Exception("ANQP_GET command failed")
+    ev = dev[0].wait_event(["ANQP-QUERY-DONE"], timeout=10)
+    if ev is None:
+        raise Exception("ANQP query timed out")
+    dev[0].dump_monitor()
+
+    if "OK" not in dev[0].request("ANQP_GET 02:11:22:33:44:55 freq=2417 258"):
+        raise Exception("ANQP_GET command failed")
+    ev = dev[0].wait_event(["ANQP-QUERY-DONE"], timeout=10)
+    if ev is None:
+        raise Exception("ANQP query timed out [2]")
+    if "result=FAILURE" not in ev:
+        raise Exception("Unexpected result: " + ev)
 
 def test_gas_anqp_get_oom(dev, apdev):
     """GAS/ANQP query OOM"""
@@ -517,8 +536,8 @@ def test_gas_anqp_icon_binary_proto(dev, apdev):
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     hapd.set("ext_mgmt_frame_handling", "1")
 
-    tests = [ '010000', '01000000', '00000000', '00030000', '00020000',
-              '00000100', '0001ff0100ee', '0001ff0200ee' ]
+    tests = ['010000', '01000000', '00000000', '00030000', '00020000',
+             '00000100', '0001ff0100ee', '0001ff0200ee']
     for test in tests:
         dev[0].request("HS20_ICON_REQUEST " + bssid + " w1fi_logo")
         query = gas_rx(hapd)
@@ -539,8 +558,8 @@ def test_gas_anqp_hs20_proto(dev, apdev):
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     hapd.set("ext_mgmt_frame_handling", "1")
 
-    tests = [ '00', '0100', '0201', '0300', '0400', '0500', '0600', '0700',
-              '0800', '0900', '0a00', '0b0000000000' ]
+    tests = ['00', '0100', '0201', '0300', '0400', '0500', '0600', '0700',
+             '0800', '0900', '0a00', '0b0000000000']
     for test in tests:
         dev[0].request("HS20_ANQP_GET " + bssid + " 3,4")
         query = gas_rx(hapd)
@@ -592,8 +611,8 @@ GAS_INITIAL_REQUEST = 10
 GAS_INITIAL_RESPONSE = 11
 GAS_COMEBACK_REQUEST = 12
 GAS_COMEBACK_RESPONSE = 13
-GAS_ACTIONS = [ GAS_INITIAL_REQUEST, GAS_INITIAL_RESPONSE,
-                GAS_COMEBACK_REQUEST, GAS_COMEBACK_RESPONSE ]
+GAS_ACTIONS = [GAS_INITIAL_REQUEST, GAS_INITIAL_RESPONSE,
+               GAS_COMEBACK_REQUEST, GAS_COMEBACK_RESPONSE]
 
 def anqp_adv_proto():
     return struct.pack('BBBB', 108, 2, 127, 0)
@@ -1004,7 +1023,7 @@ def test_gas_max_pending(dev, apdev):
     for dialog_token in range(1, 10):
         msg = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_INITIAL_REQUEST,
                           dialog_token) + anqp_adv_proto() + gas
-        req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg))
+        req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg).decode())
         if "OK" not in wpas.request(req):
             raise Exception("Could not send management frame")
         resp = wpas.mgmt_rx()
@@ -1036,7 +1055,7 @@ def test_gas_no_pending(dev, apdev):
         raise Exception("Failed to enable external management frame handling")
 
     msg = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_COMEBACK_REQUEST, 1)
-    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg))
+    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg).decode())
     if "OK" not in wpas.request(req):
         raise Exception("Could not send management frame")
     resp = wpas.mgmt_rx()
@@ -1193,22 +1212,23 @@ def test_gas_anqp_extra_elements(dev, apdev):
     geo_loc = "001052834d12efd2b08b9b4bf1cc2c00004104050000000000060100"
     civic_loc = "0000f9555302f50102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5"
     held_uri = "https://held.example.com/location"
-    held = struct.pack('BBB', 0, 1 + len(held_uri), 1) + held_uri
+    held = struct.pack('BBB', 0, 1 + len(held_uri), 1) + held_uri.encode()
     supl_fqdn = "supl.example.com"
-    supl = struct.pack('BBB', 0, 1 + len(supl_fqdn), 1) + supl_fqdn
-    public_id = binascii.hexlify(held + supl)
-    params = { "ssid": "gas/anqp",
-               "interworking": "1",
-               "anqp_elem": [ "265:" + geo_loc,
-                              "266:" + civic_loc,
-                              "262:1122334455",
-                              "267:" + public_id,
-                              "279:01020304",
-                              "60000:01",
-                              "299:0102" ] }
+    supl = struct.pack('BBB', 0, 1 + len(supl_fqdn), 1) + supl_fqdn.encode()
+    public_id = binascii.hexlify(held + supl).decode()
+    params = {"ssid": "gas/anqp",
+              "interworking": "1",
+              "anqp_elem": ["265:" + geo_loc,
+                            "266:" + civic_loc,
+                            "262:1122334455",
+                            "267:" + public_id,
+                            "279:01020304",
+                            "60000:01",
+                            "299:0102"]}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 265,266"):
         raise Exception("ANQP_GET command failed")
@@ -1559,13 +1579,13 @@ def test_gas_failures(dev, apdev):
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     dev[0].scan_for_bss(bssid2, freq="2412")
 
-    tests = [ (bssid, "gas_build_req;gas_query_tx_comeback_req"),
-              (bssid, "gas_query_tx;gas_query_tx_comeback_req"),
-              (bssid, "gas_query_append;gas_query_rx_comeback"),
-              (bssid2, "gas_query_append;gas_query_rx_initial"),
-              (bssid2, "wpabuf_alloc_copy;gas_query_rx_initial"),
-              (bssid, "gas_query_tx;gas_query_tx_initial_req") ]
-    for addr,func in tests:
+    tests = [(bssid, "gas_build_req;gas_query_tx_comeback_req"),
+             (bssid, "gas_query_tx;gas_query_tx_comeback_req"),
+             (bssid, "gas_query_append;gas_query_rx_comeback"),
+             (bssid2, "gas_query_append;gas_query_rx_initial"),
+             (bssid2, "wpabuf_alloc_copy;gas_query_rx_initial"),
+             (bssid, "gas_query_tx;gas_query_tx_initial_req")]
+    for addr, func in tests:
         with alloc_fail(dev[0], 1, func):
             dev[0].request("ANQP_GET " + addr + " 258")
             ev = dev[0].wait_event(["GAS-QUERY-DONE"], timeout=5)
@@ -1575,7 +1595,7 @@ def test_gas_failures(dev, apdev):
                 raise Exception("Unexpected result code: " + ev)
         dev[0].dump_monitor()
 
-    tests = [ "=gas_query_req", "radio_add_work;gas_query_req" ]
+    tests = ["=gas_query_req", "radio_add_work;gas_query_req"]
     for func in tests:
         with alloc_fail(dev[0], 1, func):
             if "FAIL" not in dev[0].request("ANQP_GET " + bssid + " 258"):
@@ -1599,25 +1619,25 @@ def test_gas_anqp_venue_url(dev, apdev):
     venue_type = 13
     venue_info = struct.pack('BB', venue_group, venue_type)
     lang1 = "eng"
-    name1= "Example venue"
+    name1 = "Example venue"
     lang2 = "fin"
     name2 = "Esimerkkipaikka"
-    venue1 = struct.pack('B', len(lang1 + name1)) + lang1 + name1
-    venue2 = struct.pack('B', len(lang2 + name2)) + lang2 + name2
-    venue_name = binascii.hexlify(venue_info + venue1 + venue2)
+    venue1 = struct.pack('B', len(lang1 + name1)) + lang1.encode() + name1.encode()
+    venue2 = struct.pack('B', len(lang2 + name2)) + lang2.encode() + name2.encode()
+    venue_name = binascii.hexlify(venue_info + venue1 + venue2).decode()
 
-    url1 = "http://example.com/venue"
-    url2 = "https://example.org/venue-info/"
+    url1 = b"http://example.com/venue"
+    url2 = b"https://example.org/venue-info/"
     duple1 = struct.pack('BB', 1 + len(url1), 1) + url1
     duple2 = struct.pack('BB', 1 + len(url2), 2) + url2
-    venue_url = binascii.hexlify(duple1 + duple2)
+    venue_url = binascii.hexlify(duple1 + duple2).decode()
 
-    params = { "ssid": "gas/anqp",
-               "interworking": "1",
-               "venue_group": str(venue_group),
-               "venue_type": str(venue_type),
-               "venue_name": [ lang1 + ":" + name1, lang2 + ":" + name2 ],
-               "anqp_elem": [ "277:" + venue_url ] }
+    params = {"ssid": "gas/anqp",
+              "interworking": "1",
+              "venue_group": str(venue_group),
+              "venue_type": str(venue_type),
+              "venue_name": [lang1 + ":" + name1, lang2 + ":" + name2],
+              "anqp_elem": ["277:" + venue_url]}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -1647,8 +1667,13 @@ def test_gas_anqp_venue_url(dev, apdev):
     if 'anqp_capability_list' not in bss:
         raise Exception("Capability List ANQP-element not seen")
     ids = struct.pack('<HHH', 257, 258, 277)
-    if not bss['anqp_capability_list'].startswith(binascii.hexlify(ids)):
+    if not bss['anqp_capability_list'].startswith(binascii.hexlify(ids).decode()):
         raise Exception("Unexpected Capability List ANQP-element value: " + bss['anqp_capability_list'])
+
+    if "anqp[277]" not in bss:
+        raise Exception("Venue-URL ANQP info not available")
+    if "protected-anqp-info[277]" in bss:
+        raise Exception("Unexpected Venue-URL protection info")
 
 def test_gas_anqp_venue_url2(dev, apdev):
     """GAS/ANQP and Venue URL (hostapd venue_url)"""
@@ -1656,25 +1681,25 @@ def test_gas_anqp_venue_url2(dev, apdev):
     venue_type = 13
     venue_info = struct.pack('BB', venue_group, venue_type)
     lang1 = "eng"
-    name1= "Example venue"
+    name1 = "Example venue"
     lang2 = "fin"
     name2 = "Esimerkkipaikka"
-    venue1 = struct.pack('B', len(lang1 + name1)) + lang1 + name1
-    venue2 = struct.pack('B', len(lang2 + name2)) + lang2 + name2
-    venue_name = binascii.hexlify(venue_info + venue1 + venue2)
+    venue1 = struct.pack('B', len(lang1 + name1)) + lang1.encode() + name1.encode()
+    venue2 = struct.pack('B', len(lang2 + name2)) + lang2.encode() + name2.encode()
+    venue_name = binascii.hexlify(venue_info + venue1 + venue2).decode()
 
     url1 = "http://example.com/venue"
     url2 = "https://example.org/venue-info/"
-    duple1 = struct.pack('BB', 1 + len(url1), 1) + url1
-    duple2 = struct.pack('BB', 1 + len(url2), 2) + url2
-    venue_url = binascii.hexlify(duple1 + duple2)
+    duple1 = struct.pack('BB', 1 + len(url1.encode()), 1) + url1.encode()
+    duple2 = struct.pack('BB', 1 + len(url2.encode()), 2) + url2.encode()
+    venue_url = binascii.hexlify(duple1 + duple2).decode()
 
-    params = { "ssid": "gas/anqp",
-               "interworking": "1",
-               "venue_group": str(venue_group),
-               "venue_type": str(venue_type),
-               "venue_name": [ lang1 + ":" + name1, lang2 + ":" + name2 ],
-               "venue_url": [ "1:" + url1, "2:" + url2 ] }
+    params = {"ssid": "gas/anqp",
+              "interworking": "1",
+              "venue_group": str(venue_group),
+              "venue_type": str(venue_type),
+              "venue_name": [lang1 + ":" + name1, lang2 + ":" + name2],
+              "venue_url": ["1:" + url1, "2:" + url2]}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -1695,13 +1720,13 @@ def test_gas_anqp_venue_url2(dev, apdev):
     if 'anqp[277]' not in bss:
         raise Exception("Venue URL ANQP-element not seen")
     if bss['anqp[277]'] != venue_url:
-        print venue_url
+        print(venue_url)
         raise Exception("Unexpected Venue URL ANQP-element value: " + bss['anqp[277]'])
 
     if 'anqp_capability_list' not in bss:
         raise Exception("Capability List ANQP-element not seen")
     ids = struct.pack('<HHH', 257, 258, 277)
-    if not bss['anqp_capability_list'].startswith(binascii.hexlify(ids)):
+    if not bss['anqp_capability_list'].startswith(binascii.hexlify(ids).decode()):
         raise Exception("Unexpected Capability List ANQP-element value: " + bss['anqp_capability_list'])
 
 def test_gas_anqp_venue_url_pmf(dev, apdev):
@@ -1710,27 +1735,27 @@ def test_gas_anqp_venue_url_pmf(dev, apdev):
     venue_type = 13
     venue_info = struct.pack('BB', venue_group, venue_type)
     lang1 = "eng"
-    name1= "Example venue"
+    name1 = "Example venue"
     lang2 = "fin"
     name2 = "Esimerkkipaikka"
-    venue1 = struct.pack('B', len(lang1 + name1)) + lang1 + name1
-    venue2 = struct.pack('B', len(lang2 + name2)) + lang2 + name2
+    venue1 = struct.pack('B', len(lang1 + name1)) + lang1.encode() + name1.encode()
+    venue2 = struct.pack('B', len(lang2 + name2)) + lang2.encode() + name2.encode()
     venue_name = binascii.hexlify(venue_info + venue1 + venue2)
 
     url1 = "http://example.com/venue"
     url2 = "https://example.org/venue-info/"
 
-    params = { "ssid": "gas/anqp/pmf",
-               "wpa": "2",
-               "wpa_key_mgmt": "WPA-PSK",
-               "rsn_pairwise": "CCMP",
-               "wpa_passphrase": "12345678",
-               "ieee80211w": "2",
-               "interworking": "1",
-               "venue_group": str(venue_group),
-               "venue_type": str(venue_type),
-               "venue_name": [ lang1 + ":" + name1, lang2 + ":" + name2 ],
-               "venue_url": [ "1:" + url1, "2:" + url2 ] }
+    params = {"ssid": "gas/anqp/pmf",
+              "wpa": "2",
+              "wpa_key_mgmt": "WPA-PSK",
+              "rsn_pairwise": "CCMP",
+              "wpa_passphrase": "12345678",
+              "ieee80211w": "2",
+              "interworking": "1",
+              "venue_group": str(venue_group),
+              "venue_type": str(venue_type),
+              "venue_name": [lang1 + ":" + name1, lang2 + ":" + name2],
+              "venue_url": ["1:" + url1, "2:" + url2]}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -1755,14 +1780,22 @@ def test_gas_anqp_venue_url_pmf(dev, apdev):
     if "2 " + url2 not in ev:
         raise Exception("Unexpected Venue URL information (2): " + ev)
 
+    bss = dev[0].get_bss(bssid)
+    if "anqp[277]" not in bss:
+        raise Exception("Venue-URL ANQP info not available")
+    if "protected-anqp-info[277]" not in bss:
+        raise Exception("Venue-URL protection info not available")
+    if bss["protected-anqp-info[277]"] != "1":
+        raise Exception("Venue-URL was not indicated to be protected")
+
 def test_gas_anqp_capab_list(dev, apdev):
     """GAS/ANQP and Capability List ANQP-element"""
-    params = { "ssid": "gas/anqp",
-               "interworking": "1" }
+    params = {"ssid": "gas/anqp",
+              "interworking": "1"}
     params["anqp_elem"] = []
     for i in range(0, 400):
-        if i not in [ 257 ]:
-            params["anqp_elem"] += [ "%d:010203" % i ]
+        if i not in [257]:
+            params["anqp_elem"] += ["%d:010203" % i]
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -1790,7 +1823,7 @@ def test_gas_anqp_capab_list(dev, apdev):
         val = val[4:]
     logger.info("InfoIDs: " + str(ids))
     for i in range(257, 300):
-        if i in [ 273, 274 ]:
+        if i in [273, 274]:
             continue
         if i not in ids:
             raise Exception("Unexpected Capability List ANQP-element value (missing %d): %s" % (i, bss['anqp_capability_list']))
@@ -1805,9 +1838,9 @@ def test_gas_server_oom(dev, apdev):
 
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
 
-    tests = [ "ap_sta_add;gas_dialog_create",
-              "=gas_dialog_create",
-              "wpabuf_alloc_copy;gas_serv_rx_gas_comeback_req" ]
+    tests = ["ap_sta_add;gas_dialog_create",
+             "=gas_dialog_create",
+             "wpabuf_alloc_copy;gas_serv_rx_gas_comeback_req"]
     for t in tests:
         with alloc_fail(hapd, 1, t):
             if "OK" not in dev[0].request("ANQP_GET " + bssid + " 258"):
@@ -1819,7 +1852,7 @@ def test_gas_server_oom(dev, apdev):
 
     hapd.set("gas_comeback_delay", "0")
 
-    tests = [ "gas_serv_build_gas_resp_payload" ]
+    tests = ["gas_serv_build_gas_resp_payload"]
     for t in tests:
         with alloc_fail(hapd, 1, t):
             if "OK" not in dev[0].request("ANQP_GET " + bssid + " 258"):
@@ -1849,7 +1882,7 @@ def test_gas_server_oom(dev, apdev):
         raise Exception("Failed to enable external management frame handling")
 
     msg = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_COMEBACK_REQUEST, 1)
-    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg))
+    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg).decode())
     with alloc_fail(hapd, 1,
                     "gas_anqp_build_comeback_resp_buf;gas_serv_rx_gas_comeback_req"):
         if "OK" not in wpas.request(req):
@@ -1858,17 +1891,17 @@ def test_gas_server_oom(dev, apdev):
 
 def test_gas_anqp_overrides(dev, apdev):
     """GAS and ANQP overrides"""
-    params = { "ssid": "gas/anqp",
-               "interworking": "1",
-               "anqp_elem": [ "257:111111",
-                              "258:222222",
-                              "260:333333",
-                              "261:444444",
-                              "262:555555",
-                              "263:666666",
-                              "264:777777",
-                              "268:888888",
-                              "275:999999" ] }
+    params = {"ssid": "gas/anqp",
+              "interworking": "1",
+              "anqp_elem": ["257:111111",
+                            "258:222222",
+                            "260:333333",
+                            "261:444444",
+                            "262:555555",
+                            "263:666666",
+                            "264:777777",
+                            "268:888888",
+                            "275:999999"]}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -1910,7 +1943,7 @@ def test_gas_no_dialog_token_match(dev, apdev):
     dialog_token = 100
     msg = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_INITIAL_REQUEST,
                       dialog_token) + anqp_adv_proto() + gas
-    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg))
+    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg).decode())
     if "OK" not in wpas.request(req):
         raise Exception("Could not send management frame")
     resp = wpas.mgmt_rx()
@@ -1927,7 +1960,7 @@ def test_gas_no_dialog_token_match(dev, apdev):
 
     msg = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_COMEBACK_REQUEST,
                       dialog_token + 1)
-    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg))
+    req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(msg).decode())
     if "OK" not in wpas.request(req):
         raise Exception("Could not send management frame")
     resp = wpas.mgmt_rx()
@@ -1951,25 +1984,25 @@ def test_gas_vendor_spec_errors(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
-    tests = [ "00 12340000",
-              "00 dddd0300506fff",
-              "00 dddd0400506fffff",
-              "00 dddd0400506f9aff",
-              "00 dddd0400506f9a11",
-              "00 dddd0600506f9a11ff00",
-              "00 dddd0600506f9a110600",
-              "00 dddd0600506f9a110600",
-              "00 dddd0700506f9a11060000",
-              "00 dddd0700506f9a110600ff",
-              "00 dddd0800506f9a110600ff00",
-              "00 dddd0900506f9a110600ff0000",
-              "00 dddd0900506f9a110600ff0001",
-              "00 dddd0900506f9a110600ffff00",
-              "00 dddd0a00506f9a110600ff00013b",
-              "00 dddd0700506f9a110100ff",
-              "00 dddd0700506f9a11010008",
-              "00 dddd14",
-              "00 dddd1400506f9a11" ]
+    tests = ["00 12340000",
+             "00 dddd0300506fff",
+             "00 dddd0400506fffff",
+             "00 dddd0400506f9aff",
+             "00 dddd0400506f9a11",
+             "00 dddd0600506f9a11ff00",
+             "00 dddd0600506f9a110600",
+             "00 dddd0600506f9a110600",
+             "00 dddd0700506f9a11060000",
+             "00 dddd0700506f9a110600ff",
+             "00 dddd0800506f9a110600ff00",
+             "00 dddd0900506f9a110600ff0000",
+             "00 dddd0900506f9a110600ff0001",
+             "00 dddd0900506f9a110600ffff00",
+             "00 dddd0a00506f9a110600ff00013b",
+             "00 dddd0700506f9a110100ff",
+             "00 dddd0700506f9a11010008",
+             "00 dddd14",
+             "00 dddd1400506f9a11"]
     for t in tests:
         req = dev[0].request("GAS_REQUEST " + bssid + " " + t)
         if "FAIL" in req:
@@ -2010,9 +2043,9 @@ def test_gas_vendor_spec_errors(dev, apdev):
     msg5 = struct.pack('<BBB', ACTION_CATEG_PUBLIC, GAS_INITIAL_REQUEST,
                        dialog_token) + anqp_adv_proto() + struct.pack('<H', 1)
     msg6 = struct.pack('<BB', ACTION_CATEG_PUBLIC, GAS_COMEBACK_REQUEST)
-    tests = [ msg, msg2, msg3, msg4, msg5, msg6 ]
+    tests = [msg, msg2, msg3, msg4, msg5, msg6]
     for t in tests:
-        req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(t))
+        req = "MGMT_TX {} {} freq=2412 wait_time=10 action={}".format(bssid, bssid, binascii.hexlify(t).decode())
         if "OK" not in wpas.request(req):
             raise Exception("Could not send management frame")
         ev = wpas.wait_event(["MGMT-TX-STATUS"], timeout=5)

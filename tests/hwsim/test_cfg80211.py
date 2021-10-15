@@ -16,10 +16,11 @@ import hwsim_utils
 from tshark import run_tshark
 from nl80211 import *
 from wpasupplicant import WpaSupplicant
+from utils import *
 
 def nl80211_command(dev, cmd, attr):
     res = dev.request("VENDOR ffffffff {} {}".format(nl80211_cmd[cmd],
-                                                     binascii.hexlify(attr)))
+                                                     binascii.hexlify(attr).decode()))
     if "FAIL" in res:
         raise Exception("nl80211 command failed")
     return binascii.unhexlify(res)
@@ -27,9 +28,9 @@ def nl80211_command(dev, cmd, attr):
 @remote_compatible
 def test_cfg80211_disassociate(dev, apdev):
     """cfg80211 disassociation command"""
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "open" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
     dev[0].connect("open", key_mgmt="NONE", scan_freq="2412")
-    ev = hapd.wait_event([ "AP-STA-CONNECTED" ], timeout=5)
+    ev = hapd.wait_event(["AP-STA-CONNECTED"], timeout=5)
     if ev is None:
         raise Exception("No connection event received from hostapd")
 
@@ -39,7 +40,7 @@ def test_cfg80211_disassociate(dev, apdev):
     attrs += build_nl80211_attr_mac('MAC', apdev[0]['bssid'])
     nl80211_command(dev[0], 'DISASSOCIATE', attrs)
 
-    ev = hapd.wait_event([ "AP-STA-DISCONNECTED" ], timeout=5)
+    ev = hapd.wait_event(["AP-STA-DISCONNECTED"], timeout=5)
     if ev is None:
         raise Exception("No disconnection event received from hostapd")
 
@@ -70,7 +71,7 @@ def test_cfg80211_tx_frame(dev, apdev, params):
 
     dev[0].p2p_start_go(freq='2412')
     go = WpaSupplicant(dev[0].group_ifname)
-    frame = binascii.unhexlify("d0000000020000000100" + go.own_addr().translate(None, ':') + "02000000010000000409506f9a090001dd5e506f9a0902020025080401001f0502006414060500585804510b0906000200000000000b1000585804510b0102030405060708090a0b0d1d000200000000000108000000000000000000101100084465766963652041110500585804510bdd190050f204104a0001101012000200011049000600372a000120")
+    frame = binascii.unhexlify("d0000000020000000100" + go.own_addr().replace(':', '') + "02000000010000000409506f9a090001dd5e506f9a0902020025080401001f0502006414060500585804510b0906000200000000000b1000585804510b0102030405060708090a0b0d1d000200000000000108000000000000000000101100084465766963652041110500585804510bdd190050f204104a0001101012000200011049000600372a000120")
     ifindex = int(go.get_driver_status_field("ifindex"))
     res = nl80211_frame(go, ifindex, frame, freq=2422, duration=500,
                         offchannel_tx_ok=True)
@@ -101,11 +102,12 @@ def test_cfg80211_tx_frame(dev, apdev, params):
 @remote_compatible
 def test_cfg80211_wep_key_idx_change(dev, apdev):
     """WEP Shared Key authentication and key index change without deauth"""
+    check_wep_capa(dev[0])
     hapd = hostapd.add_ap(apdev[0],
-                          { "ssid": "wep-shared-key",
-                            "wep_key0": '"hello12345678"',
-                            "wep_key1": '"other12345678"',
-                            "auth_algs": "2" })
+                          {"ssid": "wep-shared-key",
+                           "wep_key0": '"hello12345678"',
+                           "wep_key1": '"other12345678"',
+                           "auth_algs": "2"})
     id = dev[0].connect("wep-shared-key", key_mgmt="NONE", auth_alg="SHARED",
                         wep_key0='"hello12345678"',
                         wep_key1='"other12345678"',
@@ -131,8 +133,7 @@ def test_cfg80211_wep_key_idx_change(dev, apdev):
 @remote_compatible
 def test_cfg80211_hostapd_ext_sta_remove(dev, apdev):
     """cfg80211 DEL_STATION issued externally to hostapd"""
-    hapd = hostapd.add_ap(apdev[0],
-                          { "ssid": "open" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
     id = dev[0].connect("open", key_mgmt="NONE", scan_freq="2412")
 
     ifindex = int(hapd.get_driver_status_field("ifindex"))

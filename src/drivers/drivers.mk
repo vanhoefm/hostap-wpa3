@@ -23,6 +23,7 @@ DRV_CFLAGS += -DCONFIG_DRIVER_MACSEC_LINUX
 DRV_OBJS += src/drivers/driver_macsec_linux.c
 NEED_DRV_WIRED_COMMON=1
 CONFIG_LIBNL3_ROUTE=y
+NEED_LIBNL=y
 endif
 
 ifdef NEED_DRV_WIRED_COMMON
@@ -40,35 +41,16 @@ DRV_OBJS += src/drivers/driver_nl80211_scan.c
 ifdef CONFIG_DRIVER_NL80211_QCA
 DRV_CFLAGS += -DCONFIG_DRIVER_NL80211_QCA
 endif
+ifdef CONFIG_DRIVER_NL80211_BRCM
+DRV_CFLAGS += -DCONFIG_DRIVER_NL80211_BRCM
+endif
 NEED_SME=y
 NEED_AP_MLME=y
 NEED_NETLINK=y
 NEED_LINUX_IOCTL=y
 NEED_RFKILL=y
 NEED_RADIOTAP=y
-
-ifdef CONFIG_LIBNL32
-  DRV_LIBS += -lnl-3
-  DRV_LIBS += -lnl-genl-3
-  DRV_CFLAGS += -DCONFIG_LIBNL20 -I/usr/include/libnl3
-ifdef CONFIG_LIBNL3_ROUTE
-  DRV_LIBS += -lnl-route-3
-  DRV_CFLAGS += -DCONFIG_LIBNL3_ROUTE
-endif
-else
-  ifdef CONFIG_LIBNL_TINY
-    DRV_LIBS += -lnl-tiny
-  else
-    DRV_LIBS += -lnl
-  endif
-
-  ifdef CONFIG_LIBNL20
-    ifndef CONFIG_LIBNL_TINY
-      DRV_LIBS += -lnl-genl
-    endif
-    DRV_CFLAGS += -DCONFIG_LIBNL20
-  endif
-endif
+NEED_LIBNL=y
 endif
 
 ifdef CONFIG_DRIVER_BSD
@@ -153,10 +135,6 @@ ifdef NEED_NETLINK
 DRV_OBJS += src/drivers/netlink.c
 endif
 
-ifdef NEED_LINUX_IOCTL
-DRV_OBJS += src/drivers/linux_ioctl.c
-endif
-
 ifdef NEED_RFKILL
 DRV_OBJS += src/drivers/rfkill.c
 endif
@@ -169,26 +147,34 @@ ifdef CONFIG_DRIVER_CUSTOM
 DRV_CFLAGS += -DCONFIG_DRIVER_CUSTOM
 endif
 
-ifdef CONFIG_VLAN_NETLINK
 ifdef CONFIG_FULL_DYNAMIC_VLAN
+NEED_LINUX_IOCTL=y
+ifdef CONFIG_VLAN_NETLINK
+NEED_LIBNL=y
+CONFIG_LIBNL3_ROUTE=y
+endif
+endif
+
+ifdef NEED_LINUX_IOCTL
+DRV_OBJS += src/drivers/linux_ioctl.c
+endif
+
+ifdef NEED_LIBNL
 ifdef CONFIG_LIBNL32
   DRV_LIBS += -lnl-3
   DRV_LIBS += -lnl-genl-3
+  DRV_CFLAGS += -I/usr/include/libnl3
+ifdef CONFIG_LIBNL3_ROUTE
   DRV_LIBS += -lnl-route-3
-  DRV_CFLAGS += -DCONFIG_LIBNL20
+  DRV_CFLAGS += -DCONFIG_LIBNL3_ROUTE
+endif
 else
   ifdef CONFIG_LIBNL_TINY
     DRV_LIBS += -lnl-tiny
   else
     DRV_LIBS += -lnl
-  endif
-
-  ifdef CONFIG_LIBNL20
     DRV_LIBS += -lnl-genl
-    DRV_LIBS += -lnl-route
-    DRV_CFLAGS += -DCONFIG_LIBNL20
   endif
-endif
 endif
 endif
 

@@ -1,6 +1,6 @@
 /*
  * wlantest - IEEE 802.11 protocol monitoring and testing tool
- * Copyright (c) 2010-2013, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2010-2020, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -61,6 +61,7 @@ struct wlantest_sta {
 		STATE3 /* associated */
 	} state;
 	u16 auth_alg;
+	bool ft_over_ds;
 	u16 aid;
 	u8 rsnie[257]; /* WPA/RSN IE */
 	u8 osenie[257]; /* OSEN IE */
@@ -69,8 +70,16 @@ struct wlantest_sta {
 	int group_cipher;
 	int key_mgmt;
 	int rsn_capab;
-	u8 anonce[32]; /* ANonce from the previous EAPOL-Key msg 1/4 or 3/4 */
-	u8 snonce[32]; /* SNonce from the previous EAPOL-Key msg 2/4 */
+	/* ANonce from the previous EAPOL-Key msg 1/4 or 3/4 */
+	u8 anonce[WPA_NONCE_LEN];
+	/* SNonce from the previous EAPOL-Key msg 2/4 */
+	u8 snonce[WPA_NONCE_LEN];
+	u8 pmk_r0[PMK_LEN_MAX];
+	size_t pmk_r0_len;
+	u8 pmk_r0_name[WPA_PMK_NAME_LEN];
+	u8 pmk_r1[PMK_LEN_MAX];
+	size_t pmk_r1_len;
+	u8 pmk_r1_name[WPA_PMK_NAME_LEN];
 	struct wpa_ptk ptk; /* Derived PTK */
 	int ptk_set;
 	struct wpa_ptk tptk; /* Derived PTK during rekeying */
@@ -80,6 +89,7 @@ struct wlantest_sta {
 	u8 ap_sa_query_tr[2];
 	u8 sta_sa_query_tr[2];
 	u32 counters[NUM_WLANTEST_STA_COUNTER];
+	int assocreq_seen;
 	u16 assocreq_capab_info;
 	u16 assocreq_listen_int;
 	u8 *assocreq_ies;
@@ -93,6 +103,7 @@ struct wlantest_sta {
 
 	le16 seq_ctrl_to_sta[17];
 	le16 seq_ctrl_to_ap[17];
+	int allow_duplicate;
 
 	int pwrmgt;
 	int pspoll;
@@ -131,6 +142,7 @@ struct wlantest_bss {
 	size_t ssid_len;
 	int beacon_seen;
 	int proberesp_seen;
+	int ies_set;
 	int parse_error_reported;
 	u8 wpaie[257];
 	u8 rsnie[257];
@@ -147,16 +159,18 @@ struct wlantest_bss {
 	size_t gtk_len[4];
 	int gtk_idx;
 	u8 rsc[4][6];
-	u8 igtk[6][32];
-	size_t igtk_len[6];
+	u8 igtk[8][32];
+	size_t igtk_len[8];
 	int igtk_idx;
-	u8 ipn[6][6];
+	u8 ipn[8][6];
+	int bigtk_idx;
 	u32 counters[NUM_WLANTEST_BSS_COUNTER];
 	struct dl_list tdls; /* struct wlantest_tdls */
-	u8 mdid[2];
+	u8 mdid[MOBILITY_DOMAIN_ID_LEN];
 	u8 r0kh_id[FT_R0KH_ID_MAX_LEN];
 	size_t r0kh_id_len;
 	u8 r1kh_id[FT_R1KH_ID_LEN];
+	bool mesh;
 };
 
 struct wlantest_radius {
@@ -169,6 +183,14 @@ struct wlantest_radius {
 
 #define MAX_CTRL_CONNECTIONS 10
 #define MAX_NOTES 10
+
+struct tkip_frag {
+	struct wpabuf *buf;
+	u8 ra[ETH_ALEN];
+	u8 ta[ETH_ALEN];
+	u16 sn;
+	u8 fn;
+};
 
 struct wlantest {
 	int monitor_sock;
@@ -189,6 +211,7 @@ struct wlantest {
 	unsigned int rx_ctrl;
 	unsigned int rx_data;
 	unsigned int fcs_error;
+	unsigned int frame_num;
 
 	void *write_pcap; /* pcap_t* */
 	void *write_pcap_dumper; /* pcpa_dumper_t */
@@ -205,18 +228,23 @@ struct wlantest {
 
 	unsigned int assume_fcs:1;
 	unsigned int pcap_no_buffer:1;
+	unsigned int ethernet:1;
 
 	char *notes[MAX_NOTES];
 	size_t num_notes;
 
 	const char *write_file;
 	const char *pcapng_file;
+
+	struct tkip_frag tkip_frag;
 };
 
 void add_note(struct wlantest *wt, int level, const char *fmt, ...)
 PRINTF_FORMAT(3, 4);
 void clear_notes(struct wlantest *wt);
 size_t notes_len(struct wlantest *wt, size_t hdrlen);
+void write_decrypted_note(struct wlantest *wt, const u8 *decrypted,
+			  const u8 *tk, size_t tk_len, int keyid);
 
 int add_wep(struct wlantest *wt, const char *key);
 int read_cap_file(struct wlantest *wt, const char *fname);
@@ -259,7 +287,7 @@ struct wlantest_bss * bss_find(struct wlantest *wt, const u8 *bssid);
 struct wlantest_bss * bss_get(struct wlantest *wt, const u8 *bssid);
 void bss_deinit(struct wlantest_bss *bss);
 void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
-		struct ieee802_11_elems *elems);
+		struct ieee802_11_elems *elems, int beacon);
 void bss_flush(struct wlantest *wt);
 int bss_add_pmk_from_passphrase(struct wlantest_bss *bss,
 				const char *passphrase);
@@ -286,8 +314,14 @@ u8 * ccmp_256_decrypt(const u8 *tk, const struct ieee80211_hdr *hdr,
 u8 * ccmp_256_encrypt(const u8 *tk, u8 *frame, size_t len, size_t hdrlen,
 		      u8 *qos, u8 *pn, int keyid, size_t *encrypted_len);
 
+enum michael_mic_result {
+	MICHAEL_MIC_OK,
+	MICHAEL_MIC_INCORRECT,
+	MICHAEL_MIC_NOT_VERIFIED
+};
 u8 * tkip_decrypt(const u8 *tk, const struct ieee80211_hdr *hdr,
-		  const u8 *data, size_t data_len, size_t *decrypted_len);
+		  const u8 *data, size_t data_len, size_t *decrypted_len,
+		  enum michael_mic_result *mic_res, struct tkip_frag *frag);
 u8 * tkip_encrypt(const u8 *tk, u8 *frame, size_t len, size_t hdrlen, u8 *qos,
 		  u8 *pn, int keyid, size_t *encrypted_len);
 void tkip_get_pn(u8 *pn, const u8 *data);

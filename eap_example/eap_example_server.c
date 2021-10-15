@@ -88,7 +88,7 @@ static int eap_example_server_init_tls(void)
 		return -1;
 	}
 
-	if (tls_global_set_verify(eap_ctx.tls_ctx, 0)) {
+	if (tls_global_set_verify(eap_ctx.tls_ctx, 0, 1)) {
 		printf("Failed to set check_crl\n");
 		return -1;
 	}
@@ -207,6 +207,8 @@ static int eap_server_register_methods(void)
 
 int eap_example_server_init(void)
 {
+	struct eap_session_data eap_sess;
+
 	if (eap_server_register_methods() < 0)
 		return -1;
 
@@ -223,15 +225,17 @@ int eap_example_server_init(void)
 	eap_conf.eap_server = 1;
 	eap_conf.ssl_ctx = eap_ctx.tls_ctx;
 
-	eap_ctx.eap = eap_server_sm_init(&eap_ctx, &eap_cb, &eap_conf);
+	os_memset(&eap_sess, 0, sizeof(eap_sess));
+	eap_ctx.eap = eap_server_sm_init(&eap_ctx, &eap_cb, &eap_conf,
+					 &eap_sess);
 	if (eap_ctx.eap == NULL)
 		return -1;
 
 	eap_ctx.eap_if = eap_get_interface(eap_ctx.eap);
 
 	/* Enable "port" and request EAP to start authentication. */
-	eap_ctx.eap_if->portEnabled = TRUE;
-	eap_ctx.eap_if->eapRestart = TRUE;
+	eap_ctx.eap_if->portEnabled = true;
+	eap_ctx.eap_if->eapRestart = true;
 
 	return 0;
 }
@@ -292,5 +296,5 @@ void eap_example_server_rx(const u8 *data, size_t data_len)
 	wpabuf_free(eap_ctx.eap_if->eapRespData);
 	eap_ctx.eap_if->eapRespData = wpabuf_alloc_copy(data, data_len);
 	if (eap_ctx.eap_if->eapRespData)
-		eap_ctx.eap_if->eapResp = TRUE;
+		eap_ctx.eap_if->eapResp = true;
 }

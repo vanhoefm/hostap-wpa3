@@ -32,8 +32,8 @@ class IPAssign(object):
         if self._ipv6:
             # wait for DAD to finish
             while True:
-                o = subprocess.check_output(self._cmd + ['show', 'tentative', 'dev', self._iface])
-                if not self._addr in o:
+                o = subprocess.check_output(self._cmd + ['show', 'tentative', 'dev', self._iface]).decode()
+                if self._addr not in o:
                     break
                 time.sleep(0.1)
     def __exit__(self, type, value, traceback):
@@ -62,12 +62,12 @@ def hs20_filters_connect(dev, apdev, disable_dgaf=False, proxy_arp=False):
 
     dev[0].hs20_enable()
 
-    id = dev[0].add_cred_values({ 'realm': "example.com",
-                                  'username': "hs20-test",
-                                  'password': "password",
-                                  'ca_cert': "auth_serv/ca.pem",
-                                  'domain': "example.com",
-                                  'update_identifier': "1234" })
+    id = dev[0].add_cred_values({'realm': "example.com",
+                                 'username': "hs20-test",
+                                 'password': "password",
+                                 'ca_cert': "auth_serv/ca.pem",
+                                 'domain': "example.com",
+                                 'update_identifier': "1234"})
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
 
@@ -97,16 +97,18 @@ def _test_ip4_gtk_drop(devs, apdevs, params, dst):
             raise Exception("DATA_TEST_FRAME failed")
         try:
             logger.info(s.recvfrom(1024))
-            logger.info("procfile=" + procfile + " val=" + open(procfile,'r').read().rstrip())
+            logger.info("procfile=" + procfile + " val=" + open(procfile, 'r').read().rstrip())
             raise Exception("erroneously received frame!")
         except socket.timeout:
             # this is the expected behaviour
             pass
 
 def test_ip4_gtk_drop_bcast(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv4 GTK drop broadcast"""
     _test_ip4_gtk_drop(devs, apdevs, params, dst='ffffffffffff')
 
 def test_ip4_gtk_drop_mcast(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv4 GTK drop multicast"""
     _test_ip4_gtk_drop(devs, apdevs, params, dst='ff0000000000')
 
 def _test_ip6_gtk_drop(devs, apdevs, params, dst):
@@ -133,19 +135,22 @@ def _test_ip6_gtk_drop(devs, apdevs, params, dst):
             raise Exception("DATA_TEST_FRAME failed")
         try:
             logger.info(s.recvfrom(1024))
-            logger.info("procfile=" + procfile + " val=" + open(procfile,'r').read().rstrip())
+            logger.info("procfile=" + procfile + " val=" + open(procfile, 'r').read().rstrip())
             raise Exception("erroneously received frame!")
         except socket.timeout:
             # this is the expected behaviour
             pass
 
 def test_ip6_gtk_drop_bcast(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv6 GTK drop broadcast"""
     _test_ip6_gtk_drop(devs, apdevs, params, dst='ffffffffffff')
 
 def test_ip6_gtk_drop_mcast(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv6 GTK drop multicast"""
     _test_ip6_gtk_drop(devs, apdevs, params, dst='ff0000000000')
 
 def test_ip4_drop_gratuitous_arp(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv4 drop gratuitous ARP"""
     require_under_vm()
     procfile = '/proc/sys/net/ipv4/conf/%s/drop_gratuitous_arp' % devs[0].ifname
     if not os.path.exists(procfile):
@@ -162,17 +167,18 @@ def test_ip4_drop_gratuitous_arp(devs, apdevs, params):
             ap_addr = hapd.own_addr()
             cl_addr = dev.own_addr()
             pkt = build_arp(cl_addr, ap_addr, 2, ap_addr, '10.0.0.1', ap_addr, '10.0.0.1')
-            pkt = binascii.hexlify(pkt)
+            pkt = binascii.hexlify(pkt).decode()
 
             if "OK" not in hapd.request('DATA_TEST_FRAME ' + pkt):
                 raise Exception("DATA_TEST_FRAME failed")
 
-            if hapd.own_addr() in subprocess.check_output(['ip', 'neigh', 'show']):
+            if hapd.own_addr() in subprocess.check_output(['ip', 'neigh', 'show']).decode():
                 raise Exception("gratuitous ARP frame updated erroneously")
         finally:
             subprocess.call(['ip', 'neigh', 'del', '10.0.0.1', 'dev', dev.ifname])
 
 def test_ip6_drop_unsolicited_na(devs, apdevs, params):
+    """Hotspot 2.0 frame filtering - IPv6 drop unsolicited NA"""
     require_under_vm()
     procfile = '/proc/sys/net/ipv6/conf/%s/drop_unsolicited_na' % devs[0].ifname
     if not os.path.exists(procfile):
@@ -188,12 +194,12 @@ def test_ip6_drop_unsolicited_na(devs, apdevs, params):
             cl_addr = dev.own_addr()
             pkt = build_na(ap_addr, 'fdaa::2', 'ff02::1', 'fdaa::2', flags=0x20,
                            opt=binascii.unhexlify('0201' + ap_addr.replace(':', '')))
-            pkt = binascii.hexlify(pkt)
+            pkt = binascii.hexlify(pkt).decode()
 
             if "OK" not in hapd.request('DATA_TEST_FRAME ' + pkt):
                 raise Exception("DATA_TEST_FRAME failed")
 
-            if hapd.own_addr() in subprocess.check_output(['ip', 'neigh', 'show']):
+            if hapd.own_addr() in subprocess.check_output(['ip', 'neigh', 'show']).decode():
                 raise Exception("unsolicited NA frame updated erroneously")
         finally:
             subprocess.call(['ip', '-6', 'neigh', 'del', 'fdaa::2', 'dev', dev.ifname])

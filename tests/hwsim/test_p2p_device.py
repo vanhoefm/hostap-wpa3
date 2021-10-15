@@ -35,7 +35,7 @@ def test_p2p_device_grpform(dev, apdev):
         found = False
         for l in lines:
             try:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
                 if name == "wdev_id":
                     found = True
                     break
@@ -169,7 +169,7 @@ def run_p2p_device_nfc_invite(dev, apdev, no_group_iface):
 
 def test_p2p_device_misuses(dev, apdev):
     """cfg80211 P2P Device misuses"""
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "open" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
     with HWSimRadio(use_p2p_device=True) as (radio, iface):
         wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
         wpas.interface_add(iface)
@@ -214,7 +214,7 @@ def test_p2p_device_misuses(dev, apdev):
         time.sleep(1)
         hwsim_utils.test_connectivity(wpas, hapd)
 
-        ev = hapd.wait_event([ "AP-STA-DISCONNECTED" ], timeout=0.1)
+        ev = hapd.wait_event(["AP-STA-DISCONNECTED"], timeout=0.1)
         if ev is not None:
             raise Exception("Unexpected disconnection event received from hostapd")
         ev = wpas.wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=0.1)
@@ -432,6 +432,29 @@ def test_p2p_device_join_no_group_iface(dev, apdev):
             raise Exception("Unexpected group ifname: " + res2['ifname'])
 
         terminate_group(dev[0], wpas)
+
+def test_p2p_device_join_no_group_iface_cancel(dev, apdev):
+    """P2P cancel join-group using cfg80211 P2P Device (no separate group interface)"""
+    with HWSimRadio(use_p2p_device=True) as (radio, iface):
+        wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+        wpas.interface_add(iface)
+        wpas.global_request("SET p2p_no_group_iface 1")
+
+        res = dev[0].p2p_start_go()
+        bssid = dev[0].get_group_status_field('bssid')
+
+        wpas.scan_for_bss(bssid, res['freq'])
+        pin = wpas.wps_read_pin()
+        dev[0].p2p_go_authorize_client(pin)
+        cmd = "P2P_CONNECT %s %s join freq=%s" % (dev[0].p2p_dev_addr(), pin,
+                                                  res['freq'])
+        if "OK" not in wpas.request(cmd):
+            raise Exception("P2P_CONNECT(join) failed")
+        ev = wpas.wait_event(["CTRL-EVENT-SCAN-STARTED"], timeout=1)
+        if "OK" not in wpas.request("P2P_CANCEL"):
+            raise Exception("P2P_CANCEL failed")
+
+        dev[0].remove_group()
 
 def test_p2p_device_persistent_group(dev):
     """P2P persistent group formation and re-invocation with cfg80211 P2P Device"""

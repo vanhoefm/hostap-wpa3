@@ -18,7 +18,7 @@ import threading
 import time
 
 import hostapd
-from utils import HwsimSkip, require_under_vm, skip_with_fips, alloc_fail, fail_test, wait_fail_trigger
+from utils import *
 from test_ap_hs20 import build_dhcp_ack
 from test_ap_ft import ft_params1
 
@@ -65,8 +65,7 @@ def test_radius_auth_unreachable2(dev, apdev):
     mib = hapd.get_mib()
     if "radiusAuthClientAccessRequests" not in mib:
         raise Exception("Missing MIB fields")
-    if int(mib["radiusAuthClientAccessRetransmissions"]) < 1:
-        raise Exception("Missing RADIUS Authentication retransmission")
+    logger.info("radiusAuthClientAccessRetransmissions: " + mib["radiusAuthClientAccessRetransmissions"])
 
 def test_radius_auth_unreachable3(dev, apdev):
     """RADIUS Authentication server initially unreachable, but then available"""
@@ -115,11 +114,16 @@ def test_radius_acct_unreachable2(dev, apdev):
     subprocess.call(['ip', 'ro', 'del', '192.168.213.17', 'dev', 'lo'])
     connect(dev[0], "radius-acct")
     logger.info("Checking for RADIUS retries")
-    time.sleep(4)
-    mib = hapd.get_mib()
-    if "radiusAccClientRetransmissions" not in mib:
-        raise Exception("Missing MIB fields")
-    if int(mib["radiusAccClientRetransmissions"]) < 1 and int(mib["radiusAccClientPendingRequests"]) < 1:
+    found = False
+    for i in range(4):
+        time.sleep(1)
+        mib = hapd.get_mib()
+        if "radiusAccClientRetransmissions" not in mib:
+            raise Exception("Missing MIB fields")
+        if int(mib["radiusAccClientRetransmissions"]) > 0 or \
+           int(mib["radiusAccClientPendingRequests"]) > 0:
+            found = True
+    if not found:
         raise Exception("Missing pending or retransmitted RADIUS Accounting requests")
 
 def test_radius_acct_unreachable3(dev, apdev):
@@ -167,10 +171,10 @@ def test_radius_acct(dev, apdev):
     params['acct_server_addr'] = "127.0.0.1"
     params['acct_server_port'] = "1813"
     params['acct_server_shared_secret'] = "radius"
-    params['radius_auth_req_attr'] = [ "126:s:Operator", "77:s:testing",
-                                       "62:d:1" ]
-    params['radius_acct_req_attr'] = [ "126:s:Operator", "62:d:1",
-                                       "77:s:testing" ]
+    params['radius_auth_req_attr'] = ["126:s:Operator", "77:s:testing",
+                                      "62:d:1"]
+    params['radius_acct_req_attr'] = ["126:s:Operator", "62:d:1",
+                                      "77:s:testing"]
     hapd = hostapd.add_ap(apdev[0], params)
     connect(dev[0], "radius-acct")
     dev[1].connect("radius-acct", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -206,6 +210,36 @@ def test_radius_acct(dev, apdev):
     if acc_e < acc_s + 1:
         raise Exception("Unexpected RADIUS server auth MIB value")
 
+def test_radius_req_attr(dev, apdev, params):
+    """RADIUS request attributes"""
+    try:
+        import sqlite3
+    except ImportError:
+        raise HwsimSkip("No sqlite3 module available")
+    db = os.path.join(params['logdir'], "radius_req_attr.sqlite")
+    as_hapd = hostapd.Hostapd("as")
+    params = hostapd.wpa2_eap_params(ssid="radius-req-attr")
+    params['acct_server_addr'] = "127.0.0.1"
+    params['acct_server_port'] = "1813"
+    params['acct_server_shared_secret'] = "radius"
+    params['radius_auth_req_attr'] = ["126:s:Operator"]
+    params['radius_acct_req_attr'] = ["126:s:Operator"]
+    params['radius_req_attr_sqlite'] = db
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    with sqlite3.connect(db) as conn:
+        sql = "INSERT INTO radius_attributes(sta,reqtype,attr) VALUES (?,?,?)"
+        for e in [(dev[0].own_addr(), "auth", "77:s:conn-info-0"),
+                  (dev[1].own_addr(), "auth", "77:s:conn-info-1"),
+                  (dev[1].own_addr(), "auth", "77:s:conn-info-1a"),
+                  (dev[1].own_addr(), "acct", "77:s:conn-info-1b")]:
+            conn.execute(sql, e)
+        conn.commit()
+
+    connect(dev[0], "radius-req-attr")
+    connect(dev[1], "radius-req-attr")
+    connect(dev[2], "radius-req-attr")
+
 def test_radius_acct_non_ascii_ssid(dev, apdev):
     """RADIUS Accounting and non-ASCII SSID"""
     params = hostapd.wpa2_eap_params()
@@ -232,7 +266,7 @@ def test_radius_acct_pmksa_caching(dev, apdev):
     dev[1].connect("radius-acct", key_mgmt="WPA-EAP", scan_freq="2412",
                    eap="PAX", identity="test-class",
                    password_hex="0123456789abcdef0123456789abcdef")
-    for d in [ dev[0], dev[1] ]:
+    for d in [dev[0], dev[1]]:
         d.request("REASSOCIATE")
         d.wait_connected(timeout=15, error="Reassociation timed out")
 
@@ -279,6 +313,20 @@ def test_radius_acct_interim(dev, apdev):
     req_e = int(as_mib_end['radiusAccServTotalRequests'])
     if req_e < req_s + 3:
         raise Exception("Unexpected RADIUS server acct MIB value (req_e=%d req_s=%d)" % (req_e, req_s))
+    # Disable Accounting server and wait for interim update retries to fail and
+    # expire.
+    as_hapd.disable()
+    time.sleep(15)
+    as_hapd.enable()
+    ok = False
+    for i in range(10):
+        time.sleep(1)
+        as_mib = as_hapd.get_mib(param="radius_server")
+        if int(as_mib['radiusAccServTotalRequests']) > 0:
+            ok = True
+            break
+    if not ok:
+        raise Exception("Accounting updates did not seen after server restart")
 
 def test_radius_acct_interim_unreachable(dev, apdev):
     """RADIUS Accounting interim update with unreachable server"""
@@ -329,13 +377,13 @@ def test_radius_acct_ipaddr(dev, apdev):
                         stderr=open('/dev/null', 'w'))
 
 def _test_radius_acct_ipaddr(dev, apdev):
-    params = { "ssid": "radius-acct-open",
-               'acct_server_addr': "127.0.0.1",
-               'acct_server_port': "1813",
-               'acct_server_shared_secret': "radius",
-               'proxy_arp': '1',
-               'ap_isolate': '1',
-               'bridge': 'ap-br0' }
+    params = {"ssid": "radius-acct-open",
+              'acct_server_addr': "127.0.0.1",
+              'acct_server_port': "1813",
+              'acct_server_shared_secret': "radius",
+              'proxy_arp': '1',
+              'ap_isolate': '1',
+              'bridge': 'ap-br0'}
     hapd = hostapd.add_ap(apdev[0], params, no_enable=True)
     try:
         hapd.enable()
@@ -353,7 +401,7 @@ def _test_radius_acct_ipaddr(dev, apdev):
     pkt = build_dhcp_ack(dst_ll="ff:ff:ff:ff:ff:ff", src_ll=bssid,
                          ip_src="192.168.1.1", ip_dst="255.255.255.255",
                          yiaddr="192.168.1.123", chaddr=addr0)
-    if "OK" not in hapd.request("DATA_TEST_FRAME ifname=ap-br0 " + binascii.hexlify(pkt)):
+    if "OK" not in hapd.request("DATA_TEST_FRAME ifname=ap-br0 " + binascii.hexlify(pkt).decode()):
         raise Exception("DATA_TEST_FRAME failed")
 
     dev[0].request("DISCONNECT")
@@ -363,7 +411,7 @@ def _test_radius_acct_ipaddr(dev, apdev):
 def send_and_check_reply(srv, req, code, error_cause=0):
     reply = srv.SendPacket(req)
     logger.debug("RADIUS response from hostapd")
-    for i in reply.keys():
+    for i in list(reply.keys()):
         logger.debug("%s: %s" % (i, reply[i]))
     if reply.code != code:
         raise Exception("Unexpected response code")
@@ -408,6 +456,7 @@ def test_radius_acct_ft_psk(dev, apdev):
 
 def test_radius_acct_ieee8021x(dev, apdev):
     """RADIUS Accounting - IEEE 802.1X"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     as_hapd = hostapd.Hostapd("as")
     params = hostapd.radius_params()
@@ -449,12 +498,12 @@ def test_radius_das_disconnect(dev, apdev):
     dict = pyrad.dictionary.Dictionary("dictionary.radius")
 
     srv = pyrad.client.Client(server="127.0.0.1", acctport=3799,
-                              secret="secret", dict=dict)
+                              secret=b"secret", dict=dict)
     srv.retries = 1
     srv.timeout = 1
 
     logger.info("Disconnect-Request with incorrect secret")
-    req = radius_das.DisconnectPacket(dict=dict, secret="incorrect",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"incorrect",
                                       User_Name="foo",
                                       NAS_Identifier="localhost",
                                       Event_Timestamp=int(time.time()))
@@ -466,7 +515,7 @@ def test_radius_das_disconnect(dev, apdev):
         logger.info("Disconnect-Request with incorrect secret properly ignored")
 
     logger.info("Disconnect-Request without Event-Timestamp")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       User_Name="psk.user@example.com")
     logger.debug(req)
     try:
@@ -476,7 +525,7 @@ def test_radius_das_disconnect(dev, apdev):
         logger.info("Disconnect-Request without Event-Timestamp properly ignored")
 
     logger.info("Disconnect-Request with non-matching Event-Timestamp")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       User_Name="psk.user@example.com",
                                       Event_Timestamp=123456789)
     logger.debug(req)
@@ -487,57 +536,57 @@ def test_radius_das_disconnect(dev, apdev):
         logger.info("Disconnect-Request with non-matching Event-Timestamp properly ignored")
 
     logger.info("Disconnect-Request with unsupported attribute")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       User_Name="foo",
                                       User_Password="foo",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 401)
 
     logger.info("Disconnect-Request with invalid Calling-Station-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       User_Name="foo",
                                       Calling_Station_Id="foo",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 407)
 
     logger.info("Disconnect-Request with mismatching User-Name")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       User_Name="foo",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with mismatching Calling-Station-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Calling_Station_Id="12:34:56:78:90:aa",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with mismatching Acct-Session-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Acct_Session_Id="12345678-87654321",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with mismatching Acct-Session-Id (len)")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Acct_Session_Id="12345678",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with mismatching Acct-Multi-Session-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Acct_Multi_Session_Id="12345678+87654321",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with mismatching Acct-Multi-Session-Id (len)")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Acct_Multi_Session_Id="12345678",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
     logger.info("Disconnect-Request with no session identification attributes")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 503)
 
@@ -546,14 +595,14 @@ def test_radius_das_disconnect(dev, apdev):
         raise Exception("Unexpected disconnection")
 
     logger.info("Disconnect-Request with mismatching NAS-IP-Address")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="192.168.3.4",
                                       Acct_Session_Id=id,
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, 403)
 
     logger.info("Disconnect-Request with mismatching NAS-Identifier")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_Identifier="unknown.example.com",
                                       Acct_Session_Id=id,
                                       Event_Timestamp=int(time.time()))
@@ -564,7 +613,7 @@ def test_radius_das_disconnect(dev, apdev):
         raise Exception("Unexpected disconnection")
 
     logger.info("Disconnect-Request with matching Acct-Session-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Acct_Session_Id=id,
@@ -577,7 +626,7 @@ def test_radius_das_disconnect(dev, apdev):
     logger.info("Disconnect-Request with matching Acct-Multi-Session-Id")
     sta = hapd.get_sta(addr)
     multi_sess_id = sta['authMultiSessionId']
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Acct_Multi_Session_Id=multi_sess_id,
@@ -588,7 +637,7 @@ def test_radius_das_disconnect(dev, apdev):
     dev[0].wait_connected(timeout=10, error="Re-connection timed out")
 
     logger.info("Disconnect-Request with matching User-Name")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_Identifier="nas.example.com",
                                       User_Name="psk.user@example.com",
                                       Event_Timestamp=int(time.time()))
@@ -598,7 +647,7 @@ def test_radius_das_disconnect(dev, apdev):
     dev[0].wait_connected(timeout=10, error="Re-connection timed out")
 
     logger.info("Disconnect-Request with matching Calling-Station-Id")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       Calling_Station_Id=addr,
                                       Event_Timestamp=int(time.time()))
@@ -613,7 +662,7 @@ def test_radius_das_disconnect(dev, apdev):
     dev[0].wait_connected(timeout=10, error="Re-connection timed out")
 
     logger.info("Disconnect-Request with matching Calling-Station-Id and non-matching CUI")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Calling_Station_Id=addr,
                                       Chargeable_User_Identity="foo@example.com",
                                       Event_Timestamp=int(time.time()))
@@ -624,7 +673,7 @@ def test_radius_das_disconnect(dev, apdev):
                    eap="GPSK", identity="gpsk-cui",
                    password="abcdefghijklmnop0123456789abcdef",
                    scan_freq="2412")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       Chargeable_User_Identity="gpsk-chargeable-user-identity",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectACK)
@@ -639,14 +688,14 @@ def test_radius_das_disconnect(dev, apdev):
     connect(dev[2], "radius-das")
 
     logger.info("Disconnect-Request with matching User-Name - multiple sessions matching")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_Identifier="nas.example.com",
                                       User_Name="psk.user@example.com",
                                       Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.DisconnectNAK, error_cause=508)
 
     logger.info("Disconnect-Request with User-Name matching multiple sessions, Calling-Station-Id only one")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_Identifier="nas.example.com",
                                       Calling_Station_Id=addr,
                                       User_Name="psk.user@example.com",
@@ -665,7 +714,7 @@ def test_radius_das_disconnect(dev, apdev):
     multi_sess_id = sta['authMultiSessionId']
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected(timeout=10)
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Acct_Multi_Session_Id=multi_sess_id,
@@ -683,7 +732,7 @@ def test_radius_das_disconnect(dev, apdev):
     dev[0].wait_disconnected(timeout=10)
     dev[2].request("DISCONNECT")
     dev[2].wait_disconnected(timeout=10)
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       User_Name="psk.user@example.com",
@@ -693,7 +742,7 @@ def test_radius_das_disconnect(dev, apdev):
     logger.info("Disconnect-Request with matching CUI after disassociation")
     dev[1].request("DISCONNECT")
     dev[1].wait_disconnected(timeout=10)
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Chargeable_User_Identity="gpsk-chargeable-user-identity",
@@ -708,7 +757,7 @@ def test_radius_das_disconnect(dev, apdev):
     dev[0].wait_connected(timeout=15)
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected(timeout=10)
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Calling_Station_Id=addr,
@@ -716,7 +765,7 @@ def test_radius_das_disconnect(dev, apdev):
     send_and_check_reply(srv, req, pyrad.packet.DisconnectACK)
 
     logger.info("Disconnect-Request with mismatching Calling-Station-Id after disassociation")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Calling_Station_Id=addr,
@@ -725,18 +774,21 @@ def test_radius_das_disconnect(dev, apdev):
 
 def add_message_auth_req(req):
     req.authenticator = req.CreateAuthenticator()
-    hmac_obj = hmac.new(req.secret)
+    hmac_obj = hmac.new(req.secret, digestmod=hashlib.md5)
     hmac_obj.update(struct.pack("B", req.code))
     hmac_obj.update(struct.pack("B", req.id))
 
     # request attributes
-    req.AddAttribute("Message-Authenticator", 16*"\x00")
-    attrs = req._PktEncodeAttributes()
+    req.AddAttribute("Message-Authenticator", 16*b"\x00")
+    attrs = b''
+    for code, datalst in sorted(req.items()):
+        for data in datalst:
+            attrs += req._PktEncodeAttribute(code, data)
 
     # Length
     flen = 4 + 16 + len(attrs)
     hmac_obj.update(struct.pack(">H", flen))
-    hmac_obj.update(16*"\x00") # all zeros Authenticator in calculation
+    hmac_obj.update(16*b"\x00") # all zeros Authenticator in calculation
     hmac_obj.update(attrs)
     del req[80]
     req.AddAttribute("Message-Authenticator", hmac_obj.digest())
@@ -768,12 +820,12 @@ def test_radius_das_disconnect_time_window(dev, apdev):
     dict = pyrad.dictionary.Dictionary("dictionary.radius")
 
     srv = pyrad.client.Client(server="127.0.0.1", acctport=3799,
-                              secret="secret", dict=dict)
+                              secret=b"secret", dict=dict)
     srv.retries = 1
     srv.timeout = 1
 
     logger.info("Disconnect-Request with unsupported attribute")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Calling_Station_Id=addr,
@@ -787,7 +839,7 @@ def test_radius_das_disconnect_time_window(dev, apdev):
         logger.info("Disconnect-Request with non-matching Event-Timestamp properly ignored")
 
     logger.info("Disconnect-Request with unsupported attribute")
-    req = radius_das.DisconnectPacket(dict=dict, secret="secret",
+    req = radius_das.DisconnectPacket(dict=dict, secret=b"secret",
                                       NAS_IP_Address="127.0.0.1",
                                       NAS_Identifier="nas.example.com",
                                       Calling_Station_Id=addr,
@@ -818,13 +870,13 @@ def test_radius_das_coa(dev, apdev):
     dict = pyrad.dictionary.Dictionary("dictionary.radius")
 
     srv = pyrad.client.Client(server="127.0.0.1", acctport=3799,
-                              secret="secret", dict=dict)
+                              secret=b"secret", dict=dict)
     srv.retries = 1
     srv.timeout = 1
 
     # hostapd does not currently support CoA-Request, so NAK is expected
     logger.info("CoA-Request with matching Acct-Session-Id")
-    req = radius_das.CoAPacket(dict=dict, secret="secret",
+    req = radius_das.CoAPacket(dict=dict, secret=b"secret",
                                Acct_Session_Id=id,
                                Event_Timestamp=int(time.time()))
     send_and_check_reply(srv, req, pyrad.packet.CoANAK, error_cause=405)
@@ -924,7 +976,7 @@ def test_radius_macacl_unreachable(dev, apdev):
     hapd.set("auth_server_port", "1812")
     hapd.disable()
     hapd.enable()
-    dev[0].wait_connected()
+    dev[0].wait_connected(timeout=20)
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected()
 
@@ -1005,16 +1057,15 @@ def test_radius_protocol(dev, apdev):
                 logger.info("Add Message-Authenticator")
                 if self.t_events['wrong_secret'].is_set():
                     logger.info("Use incorrect RADIUS shared secret")
-                    pw = "incorrect"
+                    pw = b"incorrect"
                 else:
                     pw = reply.secret
-                hmac_obj = hmac.new(pw)
+                hmac_obj = hmac.new(pw, digestmod=hashlib.md5)
                 hmac_obj.update(struct.pack("B", reply.code))
                 hmac_obj.update(struct.pack("B", reply.id))
 
                 # reply attributes
-                reply.AddAttribute("Message-Authenticator",
-                                   "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+                reply.AddAttribute("Message-Authenticator", 16*b"\x00")
                 attrs = reply._PktEncodeAttributes()
 
                 # Length
@@ -1048,10 +1099,13 @@ def test_radius_protocol(dev, apdev):
                     else:
                         logger.error("Unexpected event in pyrad server main loop")
 
+            for fd in self.authfds + self.acctfds:
+                fd.close()
+
     srv = TestServer(dict=pyrad.dictionary.Dictionary("dictionary.radius"),
                      authport=18138, acctport=18139)
     srv.hosts["127.0.0.1"] = pyrad.server.RemoteHost("127.0.0.1",
-                                                     "radius",
+                                                     b"radius",
                                                      "localhost")
     srv.BindToAddress("")
     t_events = {}
@@ -1095,7 +1149,8 @@ def test_radius_protocol(dev, apdev):
         t.join()
 
 def build_tunnel_password(secret, authenticator, psk):
-    a = "\xab\xcd"
+    a = b"\xab\xcd"
+    psk = psk.encode()
     padlen = 16 - (1 + len(psk)) % 16
     if padlen == 16:
         padlen = 0
@@ -1109,7 +1164,7 @@ def build_tunnel_password(secret, authenticator, psk):
         cc = bytearray(pp[i] ^ bb[i] for i in range(len(bb)))
         cc_all += cc
         b = hashlib.md5(secret + cc).digest()
-    data = '\x00' + a + bytes(cc_all)
+    data = b'\x00' + a + bytes(cc_all)
     return data
 
 def start_radius_psk_server(psk, invalid_code=False, acct_interim_interval=0,
@@ -1161,10 +1216,13 @@ def start_radius_psk_server(psk, invalid_code=False, acct_interim_interval=0,
                     else:
                         logger.error("Unexpected event in pyrad server main loop")
 
+            for fd in self.authfds + self.acctfds:
+                fd.close()
+
     srv = TestServer(dict=pyrad.dictionary.Dictionary("dictionary.radius"),
                      authport=18138, acctport=18139)
     srv.hosts["127.0.0.1"] = pyrad.server.RemoteHost("127.0.0.1",
-                                                     "radius",
+                                                     b"radius",
                                                      "localhost")
     srv.BindToAddress("")
     t_events = {}
@@ -1328,6 +1386,13 @@ def test_radius_auth_force_client_addr(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     connect(dev[0], "radius-auth")
 
+def test_radius_auth_force_client_dev(dev, apdev):
+    """RADIUS client device specified"""
+    params = hostapd.wpa2_eap_params(ssid="radius-auth")
+    params['radius_client_dev'] = "lo"
+    hapd = hostapd.add_ap(apdev[0], params)
+    connect(dev[0], "radius-auth")
+
 @remote_compatible
 def test_radius_auth_force_invalid_client_addr(dev, apdev):
     """RADIUS client address specified and invalid address"""
@@ -1345,13 +1410,12 @@ def test_radius_auth_force_invalid_client_addr(dev, apdev):
 
 def add_message_auth(req):
     req.authenticator = req.CreateAuthenticator()
-    hmac_obj = hmac.new(req.secret)
+    hmac_obj = hmac.new(req.secret, digestmod=hashlib.md5)
     hmac_obj.update(struct.pack("B", req.code))
     hmac_obj.update(struct.pack("B", req.id))
 
     # request attributes
-    req.AddAttribute("Message-Authenticator",
-                     "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+    req.AddAttribute("Message-Authenticator", 16*b"\x00")
     attrs = req._PktEncodeAttributes()
 
     # Length
@@ -1373,14 +1437,14 @@ def test_radius_server_failures(dev, apdev):
 
     dict = pyrad.dictionary.Dictionary("dictionary.radius")
     client = pyrad.client.Client(server="127.0.0.1", authport=1812,
-                                 secret="radius", dict=dict)
+                                 secret=b"radius", dict=dict)
     client.retries = 1
     client.timeout = 1
 
     # unexpected State
     req = client.CreateAuthPacket(code=pyrad.packet.AccessRequest,
                                   User_Name="foo")
-    req['State'] = 'foo-state'
+    req['State'] = b'foo-state'
     add_message_auth(req)
     reply = client.SendPacket(req)
     if reply.code != pyrad.packet.AccessReject:
@@ -1440,10 +1504,13 @@ def test_ap_vlan_wpa2_psk_radius_required(dev, apdev):
                     else:
                         logger.error("Unexpected event in pyrad server main loop")
 
+            for fd in self.authfds + self.acctfds:
+                fd.close()
+
     srv = TestServer(dict=pyrad.dictionary.Dictionary("dictionary.radius"),
                      authport=18138, acctport=18139)
     srv.hosts["127.0.0.1"] = pyrad.server.RemoteHost("127.0.0.1",
-                                                     "radius",
+                                                     b"radius",
                                                      "localhost")
     srv.BindToAddress("")
     t_events = {}
@@ -1507,14 +1574,14 @@ def test_ap_vlan_wpa2_psk_radius_required(dev, apdev):
 
 def test_radius_mppe_failure(dev, apdev):
     """RADIUS failure when adding MPPE keys"""
-    params = { "ssid": "as", "beacon_int": "2000",
-               "radius_server_clients": "auth_serv/radius_clients.conf",
-               "radius_server_auth_port": '18127',
-               "eap_server": "1",
-               "eap_user_file": "auth_serv/eap_user.conf",
-               "ca_cert": "auth_serv/ca.pem",
-               "server_cert": "auth_serv/server.pem",
-               "private_key": "auth_serv/server.key" }
+    params = {"ssid": "as", "beacon_int": "2000",
+              "radius_server_clients": "auth_serv/radius_clients.conf",
+              "radius_server_auth_port": '18127',
+              "eap_server": "1",
+              "eap_user_file": "auth_serv/eap_user.conf",
+              "ca_cert": "auth_serv/ca.pem",
+              "server_cert": "auth_serv/server.pem",
+              "private_key": "auth_serv/server.key"}
     authsrv = hostapd.add_ap(apdev[1], params)
 
     params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
@@ -1534,26 +1601,26 @@ def test_radius_acct_failure(dev, apdev):
     """RADIUS Accounting and failure to add attributes"""
     # Connection goes through, but Accounting-Request cannot be sent out due to
     # NAS-Identifier being too long to fit into a RADIUS attribute.
-    params = { "ssid": "radius-acct-open",
-               'acct_server_addr': "127.0.0.1",
-               'acct_server_port': "1813",
-               'acct_server_shared_secret': "radius",
-               'nas_identifier': 255*'A' }
+    params = {"ssid": "radius-acct-open",
+              'acct_server_addr': "127.0.0.1",
+              'acct_server_port': "1813",
+              'acct_server_shared_secret': "radius",
+              'nas_identifier': 255*'A'}
     hapd = hostapd.add_ap(apdev[0], params)
     dev[0].connect("radius-acct-open", key_mgmt="NONE", scan_freq="2412")
 
 def test_radius_acct_failure_oom(dev, apdev):
     """RADIUS Accounting and failure to add attributes due to OOM"""
-    params = { "ssid": "radius-acct-open",
-               'acct_server_addr': "127.0.0.1",
-               'acct_server_port': "1813",
-               'acct_server_shared_secret': "radius",
-               'radius_acct_interim_interval': "1",
-               'nas_identifier': 250*'A',
-               'radius_acct_req_attr': [ "126:s:" + 250*'B',
-                                         "77:s:" + 250*'C',
-                                         "127:s:" + 250*'D',
-                                         "181:s:" + 250*'E' ] }
+    params = {"ssid": "radius-acct-open",
+              'acct_server_addr': "127.0.0.1",
+              'acct_server_port': "1813",
+              'acct_server_shared_secret': "radius",
+              'radius_acct_interim_interval': "1",
+              'nas_identifier': 250*'A',
+              'radius_acct_req_attr': ["126:s:" + 250*'B',
+                                       "77:s:" + 250*'C',
+                                       "127:s:" + 250*'D',
+                                       "181:s:" + 250*'E']}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
@@ -1571,9 +1638,9 @@ def test_radius_acct_failure_oom(dev, apdev):
         dev[1].request("REMOVE_NETWORK all")
         dev[1].wait_disconnected()
 
-    tests = [ (1, "radius_msg_add_attr;?radius_msg_add_attr_int32;=accounting_msg"),
-              (2, "radius_msg_add_attr;accounting_msg"),
-              (3, "radius_msg_add_attr;accounting_msg") ]
+    tests = [(1, "radius_msg_add_attr;?radius_msg_add_attr_int32;=accounting_msg"),
+             (2, "radius_msg_add_attr;accounting_msg"),
+             (3, "radius_msg_add_attr;accounting_msg")]
     for count, func in tests:
         with fail_test(hapd, count, func):
             dev[0].connect("radius-acct-open", key_mgmt="NONE",
@@ -1599,11 +1666,11 @@ def test_radius_acct_failure_oom_rsn(dev, apdev):
     params['acct_server_port'] = "1813"
     params['acct_server_shared_secret'] = "radius"
     params['radius_acct_interim_interval'] = "1"
-    params['nas_identifier'] =  250*'A'
-    params['radius_acct_req_attr'] = [ "126:s:" + 250*'B',
-                                       "77:s:" + 250*'C',
-                                       "127:s:" + 250*'D',
-                                       "181:s:" + 250*'E' ]
+    params['nas_identifier'] = 250*'A'
+    params['radius_acct_req_attr'] = ["126:s:" + 250*'B',
+                                      "77:s:" + 250*'C',
+                                      "127:s:" + 250*'D',
+                                      "181:s:" + 250*'E']
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
@@ -1630,10 +1697,10 @@ def test_radius_acct_failure_oom_rsn(dev, apdev):
 
 def test_radius_acct_failure_sta_data(dev, apdev):
     """RADIUS Accounting and failure to get STA data"""
-    params = { "ssid": "radius-acct-open",
-               'acct_server_addr': "127.0.0.1",
-               'acct_server_port': "1813",
-               'acct_server_shared_secret': "radius" }
+    params = {"ssid": "radius-acct-open",
+              'acct_server_addr': "127.0.0.1",
+              'acct_server_port': "1813",
+              'acct_server_shared_secret': "radius"}
     hapd = hostapd.add_ap(apdev[0], params)
 
     with fail_test(hapd, 1, "accounting_sta_update_stats"):

@@ -26,7 +26,7 @@ def test_sta_dynamic(dev, apdev):
 
 def test_sta_ap_scan_0(dev, apdev):
     """Dynamically added wpa_supplicant interface with AP_SCAN 0 connection"""
-    hostapd.add_ap(apdev[0], { "ssid": "test" })
+    hostapd.add_ap(apdev[0], {"ssid": "test"})
     bssid = apdev[0]['bssid']
 
     logger.info("Create a dynamic wpa_supplicant interface and connect")
@@ -48,7 +48,7 @@ def test_sta_ap_scan_0(dev, apdev):
 
 def test_sta_ap_scan_2(dev, apdev):
     """Dynamically added wpa_supplicant interface with AP_SCAN 2 connection"""
-    hostapd.add_ap(apdev[0], { "ssid": "test" })
+    hostapd.add_ap(apdev[0], {"ssid": "test"})
     bssid = apdev[0]['bssid']
 
     logger.info("Create a dynamic wpa_supplicant interface and connect")
@@ -80,7 +80,7 @@ def test_sta_ap_scan_2(dev, apdev):
 
 def test_sta_ap_scan_2b(dev, apdev):
     """Dynamically added wpa_supplicant interface with AP_SCAN 2 operation"""
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "test" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "test"})
     bssid = apdev[0]['bssid']
 
     logger.info("Create a dynamic wpa_supplicant interface and connect")
@@ -119,6 +119,7 @@ def test_sta_dynamic_down_up(dev, apdev):
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5")
     wpas.connect("sta-dynamic", psk="12345678", scan_freq="2412")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(wpas, hapd)
     subprocess.call(['ifconfig', wpas.ifname, 'down'])
     wpas.wait_disconnected(timeout=10)
@@ -126,6 +127,7 @@ def test_sta_dynamic_down_up(dev, apdev):
         raise Exception("Unexpected wpa_state")
     subprocess.call(['ifconfig', wpas.ifname, 'up'])
     wpas.wait_connected(timeout=15, error="Reconnection not reported")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(wpas, hapd)
 
 def test_sta_dynamic_ext_mac_addr_change(dev, apdev):
@@ -137,6 +139,7 @@ def test_sta_dynamic_ext_mac_addr_change(dev, apdev):
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5")
     wpas.connect("sta-dynamic", psk="12345678", scan_freq="2412")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(wpas, hapd)
     subprocess.call(['ifconfig', wpas.ifname, 'down'])
     wpas.wait_disconnected(timeout=10)
@@ -151,10 +154,60 @@ def test_sta_dynamic_ext_mac_addr_change(dev, apdev):
         wpas.wait_connected(timeout=15, error="Reconnection not reported")
         if wpas.get_driver_status_field('addr') != new_addr:
             raise Exception("Address change not reported")
+        hapd.wait_sta()
         hwsim_utils.test_connectivity(wpas, hapd)
         sta = hapd.get_sta(new_addr)
         if sta['addr'] != new_addr:
             raise Exception("STA association with new address not found")
+    finally:
+        subprocess.call(['ifconfig', wpas.ifname, 'down'])
+        subprocess.call(['ip', 'link', 'set', 'dev', wpas.ifname,
+                         'address', prev_addr])
+        subprocess.call(['ifconfig', wpas.ifname, 'up'])
+
+def test_sta_dynamic_ext_mac_addr_change_for_connection(dev, apdev):
+    """Dynamically added wpa_supplicant interface with external MAC address change for connection"""
+    params = hostapd.wpa2_params(ssid="sta-dynamic", passphrase="12345678")
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = apdev[0]['ifname']
+
+    wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+    wpas.interface_add("wlan5")
+    wpas.scan_for_bss(bssid, freq=2412)
+    subprocess.call(['ifconfig', wpas.ifname, 'down'])
+    if wpas.get_status_field("wpa_state") != "INTERFACE_DISABLED":
+        raise Exception("Unexpected wpa_state")
+    prev_addr = wpas.own_addr()
+    new_addr = '02:11:22:33:44:55'
+    try:
+        subprocess.call(['ip', 'link', 'set', 'dev', wpas.ifname,
+                         'address', new_addr])
+        subprocess.call(['ifconfig', wpas.ifname, 'up'])
+        wpas.connect("sta-dynamic", psk="12345678", scan_freq="2412",
+                     wait_connect=False)
+        ev = wpas.wait_event(["CTRL-EVENT-CONNECTED",
+                              "CTRL-EVENT-SCAN-RESULTS"], timeout=10)
+        if "CTRL-EVENT-SCAN-RESULTS" in ev:
+            raise Exception("Unexpected scan after MAC address change")
+        hapd.wait_sta()
+        hwsim_utils.test_connectivity(wpas, hapd)
+        sta = hapd.get_sta(new_addr)
+        if sta['addr'] != new_addr:
+            raise Exception("STA association with new address not found")
+        wpas.request("DISCONNECT")
+        wpas.wait_disconnected()
+        wpas.dump_monitor()
+        subprocess.call(['ifconfig', wpas.ifname, 'down'])
+        time.sleep(0.1)
+        res = wpas.get_bss(bssid)
+        if res is None:
+            raise Exception("BSS entry not maintained after interface disabling")
+        ev = wpas.wait_event(["CTRL-EVENT-BSS-REMOVED"], timeout=5.5)
+        if ev is None:
+            raise Exception("BSS entry not removed after interface has been disabled for a while")
+        res2 = wpas.get_bss(bssid)
+        if res2 is not None:
+            raise Exception("Unexpected BSS entry found on a disabled interface")
     finally:
         subprocess.call(['ifconfig', wpas.ifname, 'down'])
         subprocess.call(['ip', 'link', 'set', 'dev', wpas.ifname,

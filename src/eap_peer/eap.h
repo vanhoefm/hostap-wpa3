@@ -16,6 +16,7 @@
 struct eap_sm;
 struct wpa_config_blob;
 struct wpabuf;
+struct tls_cert_data;
 
 struct eap_method_type {
 	int vendor;
@@ -43,7 +44,7 @@ enum eapol_bool_var {
 	/**
 	 * EAPOL_eapRestart - Lower layer request to restart authentication
 	 *
-	 * Set to TRUE in lower layer, FALSE in EAP state machine.
+	 * Set to true in lower layer, false in EAP state machine.
 	 */
 	EAPOL_eapRestart,
 
@@ -57,21 +58,21 @@ enum eapol_bool_var {
 	/**
 	 * EAPOL_eapResp - Response to send
 	 *
-	 * Set to TRUE in EAP state machine, FALSE in lower layer.
+	 * Set to true in EAP state machine, false in lower layer.
 	 */
 	EAPOL_eapResp,
 
 	/**
 	 * EAPOL_eapNoResp - Request has been process; no response to send
 	 *
-	 * Set to TRUE in EAP state machine, FALSE in lower layer.
+	 * Set to true in EAP state machine, false in lower layer.
 	 */
 	EAPOL_eapNoResp,
 
 	/**
 	 * EAPOL_eapReq - EAP request available from lower layer
 	 *
-	 * Set to TRUE in lower layer, FALSE in EAP state machine.
+	 * Set to true in lower layer, false in EAP state machine.
 	 */
 	EAPOL_eapReq,
 
@@ -146,7 +147,7 @@ struct eapol_callbacks {
 	 * @variable: EAPOL boolean variable to get
 	 * Returns: Value of the EAPOL variable
 	 */
-	Boolean (*get_bool)(void *ctx, enum eapol_bool_var variable);
+	bool (*get_bool)(void *ctx, enum eapol_bool_var variable);
 
 	/**
 	 * set_bool - Set a boolean EAPOL state variable
@@ -154,8 +155,7 @@ struct eapol_callbacks {
 	 * @variable: EAPOL boolean variable to set
 	 * @value: Value for the EAPOL variable
 	 */
-	void (*set_bool)(void *ctx, enum eapol_bool_var variable,
-			 Boolean value);
+	void (*set_bool)(void *ctx, enum eapol_bool_var variable, bool value);
 
 	/**
 	 * get_int - Get an integer EAPOL state variable
@@ -226,16 +226,11 @@ struct eapol_callbacks {
 	/**
 	 * notify_cert - Notification of a peer certificate
 	 * @ctx: eapol_ctx from eap_peer_sm_init() call
-	 * @depth: Depth in certificate chain (0 = server)
-	 * @subject: Subject of the peer certificate
-	 * @altsubject: Select fields from AltSubject of the peer certificate
-	 * @num_altsubject: Number of altsubject values
+	 * @cert: Certificate information
 	 * @cert_hash: SHA-256 hash of the certificate
-	 * @cert: Peer certificate
 	 */
-	void (*notify_cert)(void *ctx, int depth, const char *subject,
-			    const char *altsubject[], int num_altsubject,
-			    const char *cert_hash, const struct wpabuf *cert);
+	void (*notify_cert)(void *ctx, struct tls_cert_data *cert,
+			    const char *cert_hash);
 
 	/**
 	 * notify_status - Notification of the current EAP state

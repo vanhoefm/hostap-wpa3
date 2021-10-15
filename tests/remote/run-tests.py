@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Remote test case executor
 # Copyright (c) 2016, Tieto Corporation
@@ -13,6 +13,7 @@ import time
 import traceback
 import getopt
 from datetime import datetime
+from random import shuffle
 
 import logging
 logger = logging.getLogger()
@@ -30,10 +31,10 @@ from utils import HwsimSkip
 from hwsim_wrapper import run_hwsim_test
 
 def usage():
-    print "USAGE: " + sys.argv[0] + " -t devices"
-    print "USAGE: " + sys.argv[0] + " -t check_devices"
-    print "USAGE: " + sys.argv[0] + " -d <dut_name> -t <all|sanity|tests_to_run> [-r <ref_name>] [-c <cfg_file.py>] [-m <all|monitor_name>] [-h hwsim_tests][-R][-T][-P][-v]"
-    print "USAGE: " + sys.argv[0]
+    print("USAGE: " + sys.argv[0] + " -t devices")
+    print("USAGE: " + sys.argv[0] + " -t check_devices")
+    print("USAGE: " + sys.argv[0] + " -d <dut_name> -t <all|sanity|tests_to_run> [-r <ref_name>] [-c <cfg_file.py>] [-m <all|monitor_name>] [-h hwsim_tests] [-f hwsim_modules][-R][-T][-P][-S][-v]")
+    print("USAGE: " + sys.argv[0])
 
 def get_devices(devices, duts, refs, monitors):
     for dut in duts:
@@ -71,17 +72,21 @@ def main():
     requested_tests = ["help"]
     requested_hwsim_tests = []
     hwsim_tests = []
+    requested_modules = []
+    modules_tests = []
     cfg_file = "cfg.py"
     log_dir = "./logs/"
     verbose = False
     trace = False
     restart = False
     perf = False
+    shuffle_tests = False
 
     # parse input parameters
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "d:r:t:l:k:c:m:h:vRPT",
-                                   ["dut=", "ref=", "tests=", "log-dir=",
+        opts, args = getopt.getopt(sys.argv[1:], "d:f:r:t:l:k:c:m:h:vRPTS",
+                                   ["dut=", "modules=", "ref=", "tests=",
+                                    "log-dir=",
                                     "cfg=", "key=", "monitor=", "hwsim="])
     except getopt.GetoptError as err:
         print(err)
@@ -97,6 +102,8 @@ def main():
             trace = True
         elif option == "-P":
             perf = True
+        elif option == "-S":
+            shuffle_tests = True
         elif option in ("-d", "--dut"):
             duts.append(argument)
         elif option in ("-r", "--ref"):
@@ -113,6 +120,8 @@ def main():
             cfg_file = argument
         elif option in ("-h", "--hwsim"):
             requested_hwsim_tests = re.split('; | |, ', argument)
+        elif option in ("-f", "--modules"):
+            requested_modules = re.split('; | |, ', argument)
         else:
             assert False, "unhandled option"
 
@@ -161,7 +170,7 @@ def main():
         if m:
             mod = __import__(m.group(1))
             test_modules.append(mod.__name__.replace('test_', '', 1))
-            for key,val in mod.__dict__.iteritems():
+            for key, val in mod.__dict__.items():
                 if key.startswith("test_"):
                     tests.append(val)
     test_names = list(set([t.__name__.replace('test_', '', 1) for t in tests]))
@@ -173,7 +182,7 @@ def main():
         if m:
             mod = __import__(m.group(1))
             test_modules.append(mod.__name__.replace('test_', '', 1))
-            for key,val in mod.__dict__.iteritems():
+            for key, val in mod.__dict__.items():
                 if key.startswith("test_"):
                     hwsim_tests.append(val)
 
@@ -200,7 +209,7 @@ def main():
                 t = None
                 for tt in hwsim_tests:
                     name = tt.__name__.replace('test_', '', 1)
-                    if name == test and tt.func_code.co_argcount <= 2:
+                    if name == test:
                         t = tt
                         break
                 if not t:
@@ -208,22 +217,38 @@ def main():
                     continue
                 hwsim_tests_to_run.append(t)
 
+    # import test_* from modules
+    files = os.listdir("../hwsim/")
+    for t in files:
+        m = re.match(r'(test_.*)\.py$', t)
+        if m:
+            mod = __import__(m.group(1))
+            if mod.__name__.replace('test_', '', 1) not in requested_modules:
+                continue
+            for key, val in mod.__dict__.items():
+                if key.startswith("test_"):
+                    modules_tests.append(val)
+
+    if len(requested_modules) > 0:
+        requested_hwsim_tests = modules_tests
+        hwsim_tests_to_run = modules_tests
+
     # sort the list
     test_names.sort()
-    tests.sort()
+    tests.sort(key=lambda t: t.__name__)
 
     # print help
     if requested_tests[0] == "help" and len(requested_hwsim_tests) == 0:
         usage()
-        print "\nAvailable Devices:"
+        print("\nAvailable Devices:")
         for device in devices:
-            print "\t", device['name']
-        print "\nAvailable tests:"
+            print("\t", device['name'])
+        print("\nAvailable tests:")
         for test in test_names:
-            print "\t", test
-        print "\nAvailable hwsim tests:"
+            print("\t", test)
+        print("\nAvailable hwsim tests:")
         for hwsim_test in hwsim_tests:
-            print "\t", hwsim_test.__name__.replace('test_', '', 1)
+            print("\t", hwsim_test.__name__.replace('test_', '', 1))
         return
 
     # show/check devices
@@ -262,10 +287,14 @@ def main():
                 continue
             tests_to_run.append(t)
 
+    if shuffle_tests:
+        shuffle(tests_to_run)
+        shuffle(hwsim_tests_to_run)
+
     # lock devices
     try:
         get_devices(devices, duts, refs, monitors)
-    except Exception, e:
+    except Exception as e:
         logger.warning("get devices failed: " + str(e))
         logger.info(traceback.format_exc())
         put_devices(devices, duts, refs, monitors)
@@ -278,17 +307,23 @@ def main():
 
     # now run test cases
     for dut in duts:
-        logger.warning("DUT: " + str(dut))
+        if len(requested_hwsim_tests) > 0:
+            logger.warning("DUT (apdev): " + str(dut))
+        else:
+            logger.warning("DUT: " + str(dut))
     for ref in refs:
-        logger.warning("REF: " + str(ref))
+        if len(requested_hwsim_tests) > 0:
+            logger.warning("REF   (dev): " + str(ref))
+        else:
+            logger.warning("REF: " + str(ref))
     for monitor in monitors:
         logger.warning("MON: " + str(monitor))
 
-    # run check_devices at begining
+    # run check_devices at beginning
     logger.warning("RUN check_devices")
     try:
         check_devices(devices, setup_params, refs, duts, monitors)
-    except Exception, e:
+    except Exception as e:
         logger.warning("FAILED: " + str(e))
         logger.info(traceback.format_exc())
         put_devices(devices, duts, refs, monitors)
@@ -317,10 +352,10 @@ def main():
         except KeyboardInterrupt:
             put_devices(devices, duts, refs, monitors)
             raise
-        except TestSkip, e:
+        except TestSkip as e:
             end = datetime.now()
             logger.warning("SKIP (" + str(e) + ") - " + str((end - start).total_seconds()) + "s")
-        except Exception, e:
+        except Exception as e:
             end = datetime.now()
             logger.warning("FAILED (" + str(e) + ") - " + str((end - start).total_seconds()) + "s")
             logger.info(traceback.format_exc())
@@ -344,11 +379,11 @@ def main():
         except KeyboardInterrupt:
             put_devices(devices, duts, refs, monitors)
             raise
-        except HwsimSkip,e:
+        except HwsimSkip as e:
             end = datetime.now()
             logger.warning("SKIP (" + str(e) + ") - " + str((end - start).total_seconds()) + "s")
             failed.append(hwsim_test.__name__.replace('test_', '', 1))
-        except Exception, e:
+        except Exception as e:
             end = datetime.now()
             logger.warning("FAILED (" + str(e) + ") - " + str((end - start).total_seconds()) + "s")
             logger.info(traceback.format_exc())

@@ -25,7 +25,7 @@ int secy_cp_control_validate_frames(struct ieee802_1x_kay *kay,
 }
 
 
-int secy_cp_control_protect_frames(struct ieee802_1x_kay *kay, Boolean enabled)
+int secy_cp_control_protect_frames(struct ieee802_1x_kay *kay, bool enabled)
 {
 	struct ieee802_1x_kay_ctx *ops;
 
@@ -45,7 +45,7 @@ int secy_cp_control_protect_frames(struct ieee802_1x_kay *kay, Boolean enabled)
 }
 
 
-int secy_cp_control_encrypt(struct ieee802_1x_kay *kay, Boolean enabled)
+int secy_cp_control_encrypt(struct ieee802_1x_kay *kay, bool enabled)
 {
 	struct ieee802_1x_kay_ctx *ops;
 
@@ -65,7 +65,7 @@ int secy_cp_control_encrypt(struct ieee802_1x_kay *kay, Boolean enabled)
 }
 
 
-int secy_cp_control_replay(struct ieee802_1x_kay *kay, Boolean enabled, u32 win)
+int secy_cp_control_replay(struct ieee802_1x_kay *kay, bool enabled, u32 win)
 {
 	struct ieee802_1x_kay_ctx *ops;
 
@@ -113,7 +113,7 @@ int secy_cp_control_confidentiality_offset(struct ieee802_1x_kay *kay,
 }
 
 
-int secy_cp_control_enable_port(struct ieee802_1x_kay *kay, Boolean enabled)
+int secy_cp_control_enable_port(struct ieee802_1x_kay *kay, bool enabled)
 {
 	struct ieee802_1x_kay_ctx *ops;
 
@@ -187,7 +187,7 @@ int secy_get_transmit_next_pn(struct ieee802_1x_kay *kay,
 	ops = kay->ctx;
 	if (!ops || !ops->get_transmit_next_pn) {
 		wpa_printf(MSG_ERROR,
-			   "KaY: secy get_receive_lowest_pn operation not supported");
+			   "KaY: secy get_transmit_next_pn operation not supported");
 		return -1;
 	}
 
@@ -208,11 +208,32 @@ int secy_set_transmit_next_pn(struct ieee802_1x_kay *kay,
 	ops = kay->ctx;
 	if (!ops || !ops->set_transmit_next_pn) {
 		wpa_printf(MSG_ERROR,
-			   "KaY: secy get_receive_lowest_pn operation not supported");
+			   "KaY: secy set_transmit_next_pn operation not supported");
 		return -1;
 	}
 
 	return ops->set_transmit_next_pn(ops->ctx, txsa);
+}
+
+
+int secy_set_receive_lowest_pn(struct ieee802_1x_kay *kay,
+			       struct receive_sa *rxsa)
+{
+	struct ieee802_1x_kay_ctx *ops;
+
+	if (!kay || !rxsa) {
+		wpa_printf(MSG_ERROR, "KaY: %s params invalid", __func__);
+		return -1;
+	}
+
+	ops = kay->ctx;
+	if (!ops || !ops->set_receive_lowest_pn) {
+		wpa_printf(MSG_ERROR,
+			   "KaY: secy set_receive_lowest_pn operation not supported");
+		return -1;
+	}
+
+	return ops->set_receive_lowest_pn(ops->ctx, rxsa);
 }
 
 
@@ -312,7 +333,7 @@ int secy_enable_receive_sa(struct ieee802_1x_kay *kay, struct receive_sa *rxsa)
 		return -1;
 	}
 
-	rxsa->enable_receive = TRUE;
+	rxsa->enable_receive = true;
 
 	return ops->enable_receive_sa(ops->ctx, rxsa);
 }
@@ -334,7 +355,7 @@ int secy_disable_receive_sa(struct ieee802_1x_kay *kay, struct receive_sa *rxsa)
 		return -1;
 	}
 
-	rxsa->enable_receive = FALSE;
+	rxsa->enable_receive = false;
 
 	return ops->disable_receive_sa(ops->ctx, rxsa);
 }
@@ -441,7 +462,7 @@ int secy_enable_transmit_sa(struct ieee802_1x_kay *kay,
 		return -1;
 	}
 
-	txsa->enable_transmit = TRUE;
+	txsa->enable_transmit = true;
 
 	return ops->enable_transmit_sa(ops->ctx, txsa);
 }
@@ -464,7 +485,7 @@ int secy_disable_transmit_sa(struct ieee802_1x_kay *kay,
 		return -1;
 	}
 
-	txsa->enable_transmit = FALSE;
+	txsa->enable_transmit = false;
 
 	return ops->disable_transmit_sa(ops->ctx, txsa);
 }
@@ -488,9 +509,9 @@ int secy_init_macsec(struct ieee802_1x_kay *kay)
 		return -1;
 	}
 
-	params.use_es = FALSE;
-	params.use_scb = FALSE;
-	params.always_include_sci = TRUE;
+	params.use_es = false;
+	params.use_scb = false;
+	params.always_include_sci = true;
 
 	ret = ops->macsec_init(ops->ctx, &params);
 

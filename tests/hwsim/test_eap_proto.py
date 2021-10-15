@@ -16,9 +16,8 @@ import threading
 import time
 
 import hostapd
-from utils import HwsimSkip, alloc_fail, fail_test, wait_fail_trigger
+from utils import *
 from test_ap_eap import check_eap_capa, check_hlr_auc_gw_support, int_eap_server_params
-from test_erp import check_erp_capa
 
 try:
     import OpenSSL
@@ -89,7 +88,7 @@ def start_radius_server(eap_handler):
     class TestServer(pyrad.server.Server):
         def _HandleAuthPacket(self, pkt):
             pyrad.server.Server._HandleAuthPacket(self, pkt)
-            eap = ""
+            eap = b''
             for p in pkt[79]:
                 eap += p
             eap_req = self.eap_handler(self.ctx, eap)
@@ -106,13 +105,12 @@ def start_radius_server(eap_handler):
                 logger.info("No EAP request available")
             reply.code = pyrad.packet.AccessChallenge
 
-            hmac_obj = hmac.new(reply.secret)
+            hmac_obj = hmac.new(reply.secret, digestmod=hashlib.md5)
             hmac_obj.update(struct.pack("B", reply.code))
             hmac_obj.update(struct.pack("B", reply.id))
 
             # reply attributes
-            reply.AddAttribute("Message-Authenticator",
-                               "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+            reply.AddAttribute("Message-Authenticator", 16*b'\x00')
             attrs = reply._PktEncodeAttributes()
 
             # Length
@@ -146,17 +144,20 @@ def start_radius_server(eap_handler):
                     else:
                         logger.error("Unexpected event in pyrad server main loop")
 
+            for fd in self.authfds + self.acctfds:
+                fd.close()
+
     srv = TestServer(dict=pyrad.dictionary.Dictionary("dictionary.radius"),
                      authport=18138, acctport=18139)
     srv.hosts["127.0.0.1"] = pyrad.server.RemoteHost("127.0.0.1",
-                                                     "radius",
+                                                     b"radius",
                                                      "localhost")
     srv.BindToAddress("")
     t_stop = threading.Event()
     t = threading.Thread(target=run_pyrad_server, args=(srv, t_stop, eap_handler))
     t.start()
 
-    return { 'srv': srv, 'stop': t_stop, 'thread': t }
+    return {'srv': srv, 'stop': t_stop, 'thread': t}
 
 def stop_radius_server(srv):
     srv['stop'].set()
@@ -172,7 +173,7 @@ def test_eap_proto(dev, apdev):
     """EAP protocol tests"""
     check_eap_capa(dev[0], "MD5")
     def eap_handler(ctx, req):
-        logger.info("eap_handler - RX " + req.encode("hex"))
+        logger.info("eap_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -294,6 +295,7 @@ def test_eap_proto(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        eap="MD5", identity="user", password="password",
@@ -393,7 +395,7 @@ def test_eap_proto(dev, apdev):
 def test_eap_proto_notification_errors(dev, apdev):
     """EAP Notification errors"""
     def eap_handler(ctx, req):
-        logger.info("eap_handler - RX " + req.encode("hex"))
+        logger.info("eap_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -438,6 +440,7 @@ def test_eap_proto_notification_errors(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         with alloc_fail(dev[0], 1, "eap_sm_processNotify"):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -494,7 +497,7 @@ def test_eap_proto_sake(dev, apdev):
                            EAP_SAKE_AT_RAND_S, 18, 0, 0, 0, 0)
 
     def sake_handler(ctx, req):
-        logger.info("sake_handler - RX " + req.encode("hex"))
+        logger.info("sake_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -748,6 +751,7 @@ def test_eap_proto_sake(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         while not eap_proto_sake_test_done:
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -777,6 +781,7 @@ def test_eap_proto_sake_errors(dev, apdev):
     check_eap_capa(dev[0], "SAKE")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 3):
         with alloc_fail(dev[0], i, "eap_sake_init"):
@@ -790,16 +795,17 @@ def test_eap_proto_sake_errors(dev, apdev):
                 raise Exception("Timeout on EAP start")
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
+            dev[0].dump_monitor()
 
-    tests = [ ( 1, "eap_msg_alloc;eap_sake_build_msg;eap_sake_process_challenge" ),
-              ( 1, "=eap_sake_process_challenge" ),
-              ( 1, "eap_sake_compute_mic;eap_sake_process_challenge" ),
-              ( 1, "eap_sake_build_msg;eap_sake_process_confirm" ),
-              ( 1, "eap_sake_compute_mic;eap_sake_process_confirm" ),
-              ( 2, "eap_sake_compute_mic;eap_sake_process_confirm" ),
-              ( 1, "eap_sake_getKey" ),
-              ( 1, "eap_sake_get_emsk" ),
-              ( 1, "eap_sake_get_session_id" ) ]
+    tests = [(1, "eap_msg_alloc;eap_sake_build_msg;eap_sake_process_challenge"),
+             (1, "=eap_sake_process_challenge"),
+             (1, "eap_sake_compute_mic;eap_sake_process_challenge"),
+             (1, "eap_sake_build_msg;eap_sake_process_confirm"),
+             (1, "eap_sake_compute_mic;eap_sake_process_confirm"),
+             (2, "eap_sake_compute_mic;=eap_sake_process_confirm"),
+             (1, "eap_sake_getKey"),
+             (1, "eap_sake_get_emsk"),
+             (1, "eap_sake_get_session_id")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -814,23 +820,33 @@ def test_eap_proto_sake_errors(dev, apdev):
             wait_fail_trigger(dev[0], "GET_ALLOC_FAIL")
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
+            dev[0].dump_monitor()
 
-    with fail_test(dev[0], 1, "os_get_random;eap_sake_process_challenge"):
-        dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
-                       eap="SAKE", identity="sake user",
-                       password_hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                       wait_connect=False)
-        ev = dev[0].wait_event(["CTRL-EVENT-EAP-PROPOSED-METHOD"], timeout=15)
-        if ev is None:
-            raise Exception("Timeout on EAP start")
-        wait_fail_trigger(dev[0], "GET_FAIL")
-        dev[0].request("REMOVE_NETWORK all")
-        dev[0].wait_disconnected()
+    tests = [(1, "os_get_random;eap_sake_process_challenge"),
+             (1, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (2, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (3, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (4, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (5, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (6, "eap_sake_derive_keys;eap_sake_process_challenge")]
+    for count, func in tests:
+        with fail_test(dev[0], count, func):
+            dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
+                           eap="SAKE", identity="sake user",
+                           password_hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                           wait_connect=False)
+            ev = dev[0].wait_event(["CTRL-EVENT-EAP-PROPOSED-METHOD"], timeout=15)
+            if ev is None:
+                raise Exception("Timeout on EAP start")
+            wait_fail_trigger(dev[0], "GET_FAIL")
+            dev[0].request("REMOVE_NETWORK all")
+            dev[0].wait_disconnected()
+            dev[0].dump_monitor()
 
 def test_eap_proto_sake_errors2(dev, apdev):
     """EAP-SAKE protocol tests (2)"""
     def sake_handler(ctx, req):
-        logger.info("sake_handler - RX " + req.encode("hex"))
+        logger.info("sake_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -852,6 +868,7 @@ def test_eap_proto_sake_errors2(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         with alloc_fail(dev[0], 1, "eap_msg_alloc;eap_sake_build_msg;eap_sake_process_identity"):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -868,11 +885,165 @@ def test_eap_proto_sake_errors2(dev, apdev):
     finally:
         stop_radius_server(srv)
 
+def run_eap_sake_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="SAKE", identity="sake user",
+                password_hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_sake_errors_server(dev, apdev):
+    """EAP-SAKE local error cases on server"""
+    check_eap_capa(dev[0], "SAKE")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_sake_init"),
+             (1, "eap_sake_build_msg;eap_sake_build_challenge"),
+             (1, "eap_sake_build_msg;eap_sake_build_confirm"),
+             (1, "eap_sake_compute_mic;eap_sake_build_confirm"),
+             (1, "eap_sake_process_challenge"),
+             (1, "eap_sake_getKey"),
+             (1, "eap_sake_get_emsk"),
+             (1, "eap_sake_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_sake_connect(dev[0])
+
+    tests = [(1, "eap_sake_init"),
+             (1, "eap_sake_build_challenge"),
+             (1, "eap_sake_build_confirm"),
+             (1, "eap_sake_derive_keys;eap_sake_process_challenge"),
+             (1, "eap_sake_compute_mic;eap_sake_process_challenge"),
+             (1, "eap_sake_compute_mic;eap_sake_process_confirm"),
+             (1, "eap_sake_compute_mic;eap_sake_build_confirm"),
+             (1, "eap_sake_process_confirm")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_sake_connect(dev[0])
+
+def start_sake_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="SAKE", identity="sake user",
+                password_hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # SAKE/Challenge/Request
+
+def stop_sake_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_sake_server(dev, apdev):
+    """EAP-SAKE protocol testing for the server"""
+    check_eap_capa(dev[0], "SAKE")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_sake_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # SAKE/Challenge/Response
+    proxy_msg(hapd, dev[0]) # SAKE/Confirm/Request
+    proxy_msg(dev[0], hapd) # SAKE/Confirm/Response
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 1/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 2/4
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 3/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 4/4
+    dev[0].wait_connected()
+    stop_sake_assoc(dev[0], hapd)
+
+    start_sake_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-SAKE header
+    # --> EAP-SAKE: Invalid frame
+    msg = resp[0:4] + "0007" + resp[8:12] + "0007" + "300200"
+    tx_msg(dev[0], hapd, msg)
+    # Unknown version
+    # --> EAP-SAKE: Unknown version 1
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "30010000"
+    tx_msg(dev[0], hapd, msg)
+    # Unknown session
+    # --> EAP-SAKE: Session ID mismatch
+    sess, = struct.unpack('B', binascii.unhexlify(resp[20:22]))
+    sess = binascii.hexlify(struct.pack('B', (sess + 1) % 256)).decode()
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "3002" + sess + "00"
+    tx_msg(dev[0], hapd, msg)
+    # Unknown subtype
+    # --> EAP-SAKE: Unexpected subtype=5 in state=1
+    msg = resp[0:22] + "05" + resp[24:]
+    tx_msg(dev[0], hapd, msg)
+    # Empty challenge
+    # --> EAP-SAKE: Response/Challenge did not include AT_RAND_P or AT_MIC_P
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + resp[16:24]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_sake_assoc(dev[0], hapd)
+
+    start_sake_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Invalid attribute in challenge
+    # --> EAP-SAKE: Too short attribute
+    msg = resp[0:4] + "0009" + resp[8:12] + "0009" + resp[16:26]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_sake_assoc(dev[0], hapd)
+
+    start_sake_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # SAKE/Challenge/Response
+    proxy_msg(hapd, dev[0]) # SAKE/Confirm/Request
+    resp = rx_msg(dev[0])
+    # Empty confirm
+    # --> EAP-SAKE: Response/Confirm did not include AT_MIC_P
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + resp[16:26]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_sake_assoc(dev[0], hapd)
+
+    start_sake_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # SAKE/Challenge/Response
+    proxy_msg(hapd, dev[0]) # SAKE/Confirm/Request
+    resp = rx_msg(dev[0])
+    # Invalid attribute in confirm
+    # --> EAP-SAKE: Too short attribute
+    msg = resp[0:4] + "0009" + resp[8:12] + "0009" + resp[16:26]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_sake_assoc(dev[0], hapd)
+
+    start_sake_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # SAKE/Challenge/Response
+    proxy_msg(hapd, dev[0]) # SAKE/Confirm/Request
+    resp = rx_msg(dev[0])
+    # Corrupted AT_MIC_P value
+    # --> EAP-SAKE: Incorrect AT_MIC_P
+    msg = resp[0:30] + "000000000000" + resp[42:]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_sake_assoc(dev[0], hapd)
+
 def test_eap_proto_leap(dev, apdev):
     """EAP-LEAP protocol tests"""
     check_eap_capa(dev[0], "LEAP")
     def leap_handler(ctx, req):
-        logger.info("leap_handler - RX " + req.encode("hex"))
+        logger.info("leap_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1019,6 +1190,7 @@ def test_eap_proto_leap(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 12):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1040,7 +1212,7 @@ def test_eap_proto_leap_errors(dev, apdev):
     check_eap_capa(dev[0], "LEAP")
 
     def leap_handler2(ctx, req):
-        logger.info("leap_handler2 - RX " + req.encode("hex"))
+        logger.info("leap_handler2 - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1232,6 +1404,7 @@ def test_eap_proto_leap_errors(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         with alloc_fail(dev[0], 1, "eap_leap_init"):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1341,7 +1514,7 @@ def test_eap_proto_md5(dev, apdev):
     check_eap_capa(dev[0], "MD5")
 
     def md5_handler(ctx, req):
-        logger.info("md5_handler - RX " + req.encode("hex"))
+        logger.info("md5_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1382,6 +1555,7 @@ def test_eap_proto_md5(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 4):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1400,6 +1574,7 @@ def test_eap_proto_md5_errors(dev, apdev):
     check_eap_capa(dev[0], "MD5")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     with fail_test(dev[0], 1, "chap_md5"):
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1421,10 +1596,90 @@ def test_eap_proto_md5_errors(dev, apdev):
         time.sleep(0.1)
         dev[0].request("REMOVE_NETWORK all")
 
+def run_eap_md5_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="MD5", identity="phase1-user", password="password",
+                wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_md5_errors_server(dev, apdev):
+    """EAP-MD5 local error cases on server"""
+    check_eap_capa(dev[0], "MD5")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_md5_init")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_md5_connect(dev[0])
+
+    tests = [(1, "os_get_random;eap_md5_buildReq"),
+             (1, "chap_md5;eap_md5_process")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_md5_connect(dev[0])
+
+def start_md5_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="MD5", identity="phase1-user", password="password",
+                wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # MSCHAPV2/Request
+    proxy_msg(dev, hapd) # NAK
+    proxy_msg(hapd, dev) # MD5 Request
+
+def stop_md5_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_md5_server(dev, apdev):
+    """EAP-MD5 protocol testing for the server"""
+    check_eap_capa(dev[0], "MD5")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_md5_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # MD5 Response
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-SUCCESS"], timeout=5)
+    if ev is None:
+        raise Exception("No EAP-Success reported")
+    stop_md5_assoc(dev[0], hapd)
+
+    start_md5_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-MD5 header (no length field)
+    hapd.note("EAP-MD5: Invalid frame")
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "04"
+    tx_msg(dev[0], hapd, msg)
+    # Too short EAP-MD5 header (no length field)
+    hapd.note("EAP-MD5: Invalid response (response_len=0 payload_len=1")
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "0400"
+    tx_msg(dev[0], hapd, msg)
+    stop_md5_assoc(dev[0], hapd)
+
 def test_eap_proto_otp(dev, apdev):
     """EAP-OTP protocol tests"""
     def otp_handler(ctx, req):
-        logger.info("otp_handler - RX " + req.encode("hex"))
+        logger.info("otp_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1459,6 +1714,7 @@ def test_eap_proto_otp(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 1):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1478,7 +1734,7 @@ def test_eap_proto_otp(dev, apdev):
             raise Exception("Request for password timed out")
         id = ev.split(':')[0].split('-')[-1]
         dev[0].request("CTRL-RSP-OTP-" + id + ":password")
-        ev = dev[0].wait_event("CTRL-EVENT-EAP-SUCCESS")
+        ev = dev[0].wait_event(["CTRL-EVENT-EAP-SUCCESS"])
         if ev is None:
             raise Exception("Success not reported")
     finally:
@@ -1487,7 +1743,7 @@ def test_eap_proto_otp(dev, apdev):
 def test_eap_proto_otp_errors(dev, apdev):
     """EAP-OTP local error cases"""
     def otp_handler2(ctx, req):
-        logger.info("otp_handler2 - RX " + req.encode("hex"))
+        logger.info("otp_handler2 - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1510,6 +1766,7 @@ def test_eap_proto_otp_errors(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         with alloc_fail(dev[0], 1, "eap_msg_alloc;eap_otp_process"):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -1531,7 +1788,7 @@ EAP_GPSK_OPCODE_PROTECTED_FAIL = 6
 def test_eap_proto_gpsk(dev, apdev):
     """EAP-GPSK protocol tests"""
     def gpsk_handler(ctx, req):
-        logger.info("gpsk_handler - RX " + req.encode("hex"))
+        logger.info("gpsk_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -1949,6 +2206,7 @@ def test_eap_proto_gpsk(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 27):
             if i == 12:
@@ -1967,6 +2225,301 @@ def test_eap_proto_gpsk(dev, apdev):
     finally:
         stop_radius_server(srv)
 
+def run_eap_gpsk_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="GPSK", identity="gpsk user",
+                password="abcdefghijklmnop0123456789abcdef",
+                wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_gpsk_errors_server(dev, apdev):
+    """EAP-GPSK local error cases on server"""
+    check_eap_capa(dev[0], "GPSK")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_gpsk_init"),
+             (1, "eap_msg_alloc;eap_gpsk_build_gpsk_1"),
+             (1, "eap_msg_alloc;eap_gpsk_build_gpsk_3"),
+             (1, "eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_derive_keys;eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_derive_session_id;eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_getKey"),
+             (1, "eap_gpsk_get_emsk"),
+             (1, "eap_gpsk_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_gpsk_connect(dev[0])
+
+    tests = [(1, "os_get_random;eap_gpsk_build_gpsk_1"),
+             (1, "eap_gpsk_compute_mic;eap_gpsk_build_gpsk_3"),
+             (1, "eap_gpsk_derive_keys;eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_derive_session_id;eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_compute_mic;eap_gpsk_process_gpsk_2"),
+             (1, "eap_gpsk_compute_mic;eap_gpsk_process_gpsk_4")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_gpsk_connect(dev[0])
+
+def start_gpsk_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="GPSK", identity="gpsk user",
+                password="abcdefghijklmnop0123456789abcdef",
+                wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # GPSK-1
+
+def stop_gpsk_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_gpsk_server(dev, apdev):
+    """EAP-GPSK protocol testing for the server"""
+    check_eap_capa(dev[0], "GPSK")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_gpsk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # GPSK-2
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    proxy_msg(dev[0], hapd) # GPSK-4
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 1/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 2/4
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 3/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 4/4
+    dev[0].wait_connected()
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-GPSK header (no OP-Code)
+    # --> EAP-GPSK: Invalid frame
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "33"
+    tx_msg(dev[0], hapd, msg)
+    # Unknown OP-Code
+    # --> EAP-GPSK: Unexpected opcode=7 in state=0
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "3307"
+    tx_msg(dev[0], hapd, msg)
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for ID_Peer length
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "3302"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for ID_Peer
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "33020001"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for ID_Server length
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "33020000"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for ID_Server
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "330200000001"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # ID_Server mismatch
+    # --> EAP-GPSK: ID_Server in GPSK-1 and GPSK-2 did not match
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "330200000000"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for RAND_Peer
+    msg = resp[0:4] + "0011" + resp[8:12] + "0011" + "330200000007" + binascii.hexlify(b"hostapd").decode()
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for RAND_Server
+    msg = resp[0:4] + "0031" + resp[8:12] + "0031" + "330200000007" + binascii.hexlify(b"hostapd").decode() + 32*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # RAND_Server mismatch
+    # --> EAP-GPSK: RAND_Server in GPSK-1 and GPSK-2 did not match
+    msg = resp[0:4] + "0051" + resp[8:12] + "0051" + "330200000007" + binascii.hexlify(b"hostapd").decode() + 32*"00" + 32*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for CSuite_List length
+    msg = resp[0:4] + "005a" + resp[8:12] + "005a" + resp[16:188]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for CSuite_List
+    msg = resp[0:4] + "005c" + resp[8:12] + "005c" + resp[16:192]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: CSuite_List in GPSK-1 and GPSK-2 did not match
+    msg = resp[0:4] + "005c" + resp[8:12] + "005c" + resp[16:188] + "0000"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for CSuite_Sel
+    msg = resp[0:4] + "0068" + resp[8:12] + "0068" + resp[16:216]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Unsupported CSuite_Sel
+    # --> EAP-GPSK: Peer selected unsupported ciphersuite 0:255
+    msg = resp[0:4] + "006e" + resp[8:12] + "006e" + resp[16:226] + "ff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for PD_Payload_1 length
+    msg = resp[0:4] + "006e" + resp[8:12] + "006e" + resp[16:228]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Too short message for PD_Payload_1
+    msg = resp[0:4] + "0070" + resp[8:12] + "0070" + resp[16:230] + "ff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short GPSK-2
+    # --> EAP-GPSK: Message too short for MIC (left=0 miclen=16)
+    msg = resp[0:4] + "0070" + resp[8:12] + "0070" + resp[16:232]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Extra data in the end of GPSK-2
+    # --> EAP-GPSK: Ignored 1 bytes of extra data in the end of GPSK-2
+    msg = resp[0:4] + "0081" + resp[8:12] + "0081" + resp[16:264] + "00"
+    tx_msg(dev[0], hapd, msg)
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    resp = rx_msg(dev[0])
+    # Too short GPSK-4
+    # --> EAP-GPSK: Too short message for PD_Payload_1 length
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "3304"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Failure
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # GPSK-2
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    resp = rx_msg(dev[0])
+    # Too short GPSK-4
+    # --> EAP-GPSK: Too short message for PD_Payload_1
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "33040001"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Failure
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # GPSK-2
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    resp = rx_msg(dev[0])
+    # Too short GPSK-4
+    # --> EAP-GPSK: Message too short for MIC (left=0 miclen=16)
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "33040000"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Failure
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # GPSK-2
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    resp = rx_msg(dev[0])
+    # Incorrect MIC in GPSK-4
+    # --> EAP-GPSK: Incorrect MIC in GPSK-4
+    msg = resp[0:4] + "0018" + resp[8:12] + "0018" + "33040000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Failure
+    stop_gpsk_assoc(dev[0], hapd)
+
+    start_gpsk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # GPSK-2
+    proxy_msg(hapd, dev[0]) # GPSK-3
+    resp = rx_msg(dev[0])
+    # Incorrect MIC in GPSK-4
+    # --> EAP-GPSK: Ignored 1 bytes of extra data in the end of GPSK-4
+    msg = resp[0:4] + "0019" + resp[8:12] + "0019" + resp[16:] + "00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Success
+    stop_gpsk_assoc(dev[0], hapd)
+
 EAP_EKE_ID = 1
 EAP_EKE_COMMIT = 2
 EAP_EKE_CONFIRM = 3
@@ -1975,7 +2528,7 @@ EAP_EKE_FAILURE = 4
 def test_eap_proto_eke(dev, apdev):
     """EAP-EKE protocol tests"""
     def eke_handler(ctx, req):
-        logger.info("eke_handler - RX " + req.encode("hex"))
+        logger.info("eke_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -2255,6 +2808,7 @@ def test_eap_proto_eke(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 14):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2264,7 +2818,7 @@ def test_eap_proto_eke(dev, apdev):
                                    timeout=15)
             if ev is None:
                 raise Exception("Timeout on EAP start")
-            if i in [ 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 ]:
+            if i in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
                                        timeout=10)
                 if ev is None:
@@ -2280,8 +2834,8 @@ def eap_eke_test_fail(dev, phase1=None, success=False):
     dev.connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                 eap="EKE", identity="eke user@domain", password="hello",
                 phase1=phase1, erp="1", wait_connect=False)
-    ev = dev.wait_event([ "CTRL-EVENT-EAP-FAILURE",
-                          "CTRL-EVENT-EAP-SUCCESS" ], timeout=5)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-EAP-SUCCESS"], timeout=5)
     if ev is None:
         raise Exception("Timeout on EAP failure")
     if not success and "CTRL-EVENT-EAP-FAILURE" not in ev:
@@ -2294,6 +2848,7 @@ def test_eap_proto_eke_errors(dev, apdev):
     check_eap_capa(dev[0], "EKE")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 3):
         with alloc_fail(dev[0], i, "eap_eke_init"):
@@ -2307,55 +2862,57 @@ def test_eap_proto_eke_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "eap_eke_dh_init", None),
-              (1, "eap_eke_prf_hmac_sha1", "dhgroup=3 encr=1 prf=1 mac=1"),
-              (1, "eap_eke_prf_hmac_sha256", "dhgroup=5 encr=1 prf=2 mac=2"),
-              (1, "eap_eke_prf", None),
-              (1, "os_get_random;eap_eke_dhcomp", None),
-              (1, "aes_128_cbc_encrypt;eap_eke_dhcomp", None),
-              (1, "aes_128_cbc_decrypt;eap_eke_shared_secret", None),
-              (1, "eap_eke_prf;eap_eke_shared_secret", None),
-              (1, "eap_eke_prfplus;eap_eke_derive_ke_ki", None),
-              (1, "eap_eke_prfplus;eap_eke_derive_ka", None),
-              (1, "eap_eke_prfplus;eap_eke_derive_msk", None),
-              (1, "os_get_random;eap_eke_prot", None),
-              (1, "aes_128_cbc_decrypt;eap_eke_decrypt_prot", None),
-              (1, "eap_eke_derive_key;eap_eke_process_commit", None),
-              (1, "eap_eke_dh_init;eap_eke_process_commit", None),
-              (1, "eap_eke_shared_secret;eap_eke_process_commit", None),
-              (1, "eap_eke_derive_ke_ki;eap_eke_process_commit", None),
-              (1, "eap_eke_dhcomp;eap_eke_process_commit", None),
-              (1, "os_get_random;eap_eke_process_commit", None),
-              (1, "os_get_random;=eap_eke_process_commit", None),
-              (1, "eap_eke_prot;eap_eke_process_commit", None),
-              (1, "eap_eke_decrypt_prot;eap_eke_process_confirm", None),
-              (1, "eap_eke_derive_ka;eap_eke_process_confirm", None),
-              (1, "eap_eke_auth;eap_eke_process_confirm", None),
-              (2, "eap_eke_auth;eap_eke_process_confirm", None),
-              (1, "eap_eke_prot;eap_eke_process_confirm", None),
-              (1, "eap_eke_derive_msk;eap_eke_process_confirm", None) ]
+    tests = [(1, "eap_eke_dh_init", None),
+             (1, "eap_eke_prf_hmac_sha1", "dhgroup=3 encr=1 prf=1 mac=1"),
+             (1, "eap_eke_prf_hmac_sha256", "dhgroup=5 encr=1 prf=2 mac=2"),
+             (1, "eap_eke_prf", None),
+             (1, "os_get_random;eap_eke_dhcomp", None),
+             (1, "aes_128_cbc_encrypt;eap_eke_dhcomp", None),
+             (1, "aes_128_cbc_decrypt;eap_eke_shared_secret", None),
+             (1, "hmac_sha256_vector;eap_eke_shared_secret", None),
+             (1, "eap_eke_prf_hmac_sha256;eap_eke_derive_ke_ki", None),
+             (1, "eap_eke_prf_hmac_sha256;eap_eke_derive_ka", None),
+             (1, "eap_eke_prf_hmac_sha256;eap_eke_derive_msk", None),
+             (1, "os_get_random;eap_eke_prot", None),
+             (1, "aes_128_cbc_decrypt;eap_eke_decrypt_prot", None),
+             (1, "eap_eke_derive_key;eap_eke_process_commit", None),
+             (1, "eap_eke_dh_init;eap_eke_process_commit", None),
+             (1, "eap_eke_shared_secret;eap_eke_process_commit", None),
+             (1, "eap_eke_derive_ke_ki;eap_eke_process_commit", None),
+             (1, "eap_eke_dhcomp;eap_eke_process_commit", None),
+             (1, "os_get_random;eap_eke_process_commit", None),
+             (1, "os_get_random;=eap_eke_process_commit", None),
+             (1, "eap_eke_prot;eap_eke_process_commit", None),
+             (1, "eap_eke_decrypt_prot;eap_eke_process_confirm", None),
+             (1, "eap_eke_derive_ka;eap_eke_process_confirm", None),
+             (1, "eap_eke_auth;eap_eke_process_confirm", None),
+             (2, "eap_eke_auth;eap_eke_process_confirm", None),
+             (1, "eap_eke_prot;eap_eke_process_confirm", None),
+             (1, "aes_128_cbc_encrypt;eap_eke_prot;eap_eke_process_confirm", None),
+             (1, "hmac_sha256;eap_eke_prot;eap_eke_process_confirm", None),
+             (1, "eap_eke_derive_msk;eap_eke_process_confirm", None)]
     for count, func, phase1 in tests:
         with fail_test(dev[0], count, func):
             eap_eke_test_fail(dev[0], phase1)
 
-    tests = [ (1, "=eap_eke_derive_ke_ki", None),
-              (1, "=eap_eke_derive_ka", None),
-              (1, "=eap_eke_derive_msk", None),
-              (1, "eap_eke_build_msg;eap_eke_process_id", None),
-              (1, "wpabuf_alloc;eap_eke_process_id", None),
-              (1, "=eap_eke_process_id", None),
-              (1, "wpabuf_alloc;=eap_eke_process_id", None),
-              (1, "wpabuf_alloc;eap_eke_process_id", None),
-              (1, "eap_eke_build_msg;eap_eke_process_commit", None),
-              (1, "wpabuf_resize;eap_eke_process_commit", None),
-              (1, "eap_eke_build_msg;eap_eke_process_confirm", None) ]
+    tests = [(1, "=eap_eke_derive_ke_ki", None),
+             (1, "=eap_eke_derive_ka", None),
+             (1, "=eap_eke_derive_msk", None),
+             (1, "eap_eke_build_msg;eap_eke_process_id", None),
+             (1, "wpabuf_alloc;eap_eke_process_id", None),
+             (1, "=eap_eke_process_id", None),
+             (1, "wpabuf_alloc;=eap_eke_process_id", None),
+             (1, "wpabuf_alloc;eap_eke_process_id", None),
+             (1, "eap_eke_build_msg;eap_eke_process_commit", None),
+             (1, "wpabuf_resize;eap_eke_process_commit", None),
+             (1, "eap_eke_build_msg;eap_eke_process_confirm", None)]
     for count, func, phase1 in tests:
         with alloc_fail(dev[0], count, func):
             eap_eke_test_fail(dev[0], phase1)
 
-    tests = [ (1, "eap_eke_getKey", None),
-              (1, "eap_eke_get_emsk", None),
-              (1, "eap_eke_get_session_id", None) ]
+    tests = [(1, "eap_eke_getKey", None),
+             (1, "eap_eke_get_emsk", None),
+             (1, "eap_eke_get_session_id", None)]
     for count, func, phase1 in tests:
         with alloc_fail(dev[0], count, func):
             eap_eke_test_fail(dev[0], phase1, success=True)
@@ -2406,7 +2963,7 @@ def test_eap_proto_pax(dev, apdev):
                                0xf0, 0xac, 0xcf, 0xc4, 0x66, 0xcd, 0x2d, 0xbf)
 
     def pax_handler(ctx, req):
-        logger.info("pax_handler - RX " + req.encode("hex"))
+        logger.info("pax_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -2659,6 +3216,7 @@ def test_eap_proto_pax(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 18):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2704,6 +3262,7 @@ def test_eap_proto_pax_errors(dev, apdev):
     check_eap_capa(dev[0], "PAX")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 3):
         with alloc_fail(dev[0], i, "eap_pax_init"):
@@ -2718,11 +3277,11 @@ def test_eap_proto_pax_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ "eap_msg_alloc;eap_pax_alloc_resp;eap_pax_process_std_1",
-              "eap_msg_alloc;eap_pax_alloc_resp;eap_pax_process_std_3",
-              "eap_pax_getKey",
-              "eap_pax_get_emsk",
-              "eap_pax_get_session_id" ]
+    tests = ["eap_msg_alloc;eap_pax_alloc_resp;eap_pax_process_std_1",
+             "eap_msg_alloc;eap_pax_alloc_resp;eap_pax_process_std_3",
+             "eap_pax_getKey",
+             "eap_pax_get_emsk",
+             "eap_pax_get_session_id"]
     for func in tests:
         with alloc_fail(dev[0], 1, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2733,12 +3292,12 @@ def test_eap_proto_pax_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "os_get_random;eap_pax_process_std_1"),
-              (1, "eap_pax_initial_key_derivation"),
-              (1, "eap_pax_mac;eap_pax_process_std_3"),
-              (2, "eap_pax_mac;eap_pax_process_std_3"),
-              (1, "eap_pax_kdf;eap_pax_getKey"),
-              (1, "eap_pax_kdf;eap_pax_get_emsk") ]
+    tests = [(1, "os_get_random;eap_pax_process_std_1"),
+             (1, "eap_pax_initial_key_derivation"),
+             (1, "eap_pax_mac;eap_pax_process_std_3"),
+             (2, "eap_pax_mac;eap_pax_process_std_3"),
+             (1, "eap_pax_kdf;eap_pax_getKey"),
+             (1, "eap_pax_kdf;eap_pax_get_emsk")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2749,10 +3308,199 @@ def test_eap_proto_pax_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
+def run_eap_pax_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="PAX", identity="pax.user@example.com",
+                password_hex="0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_pax_errors_server(dev, apdev):
+    """EAP-PAX local error cases on server"""
+    check_eap_capa(dev[0], "PAX")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_pax_init"),
+             (1, "eap_msg_alloc;eap_pax_build_std_1"),
+             (1, "eap_msg_alloc;eap_pax_build_std_3"),
+             (1, "=eap_pax_process_std_2"),
+             (1, "eap_pax_getKey"),
+             (1, "eap_pax_get_emsk"),
+             (1, "eap_pax_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_pax_connect(dev[0])
+
+    tests = [(1, "os_get_random;eap_pax_build_std_1"),
+             (1, "eap_pax_mac;eap_pax_build_std_1"),
+             (1, "eap_pax_mac;eap_pax_build_std_3"),
+             (2, "eap_pax_mac;=eap_pax_build_std_3"),
+             (1, "eap_pax_initial_key_derivation;eap_pax_process_std_2"),
+             (1, "eap_pax_mac;eap_pax_process_std_2"),
+             (2, "eap_pax_mac;=eap_pax_process_std_2"),
+             (1, "eap_pax_mac;eap_pax_check")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_pax_connect(dev[0])
+
+def start_pax_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="PAX", identity="pax.user@example.com",
+                password_hex="0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # PAX_STD-1
+
+def stop_pax_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_pax_server(dev, apdev):
+    """EAP-PAX protocol testing for the server"""
+    check_eap_capa(dev[0], "PAX")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_pax_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PAX_STD-2
+    proxy_msg(hapd, dev[0]) # PAX_STD-3
+    proxy_msg(dev[0], hapd) # PAX-ACK
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 1/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 2/4
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 3/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 4/4
+    dev[0].wait_connected()
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-PAX header (no OP-Code)
+    hapd.note("EAP-PAX: Invalid frame")
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "2e"
+    tx_msg(dev[0], hapd, msg)
+    # Too short EAP-PAX message (no payload)
+    hapd.note("EAP-PAX: Invalid frame")
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "2e1100000000"
+    tx_msg(dev[0], hapd, msg)
+    # Unexpected PAX_SEC-2
+    hapd.note("EAP-PAX: Expected PAX_STD-2 - ignore op 17")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e1100000000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Unexpected MAC ID
+    hapd.note("EAP-PAX: Expected MAC ID 0x1, received 0xff")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e0200ff0000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Unexpected DH Group ID
+    hapd.note("EAP-PAX: Expected DH Group ID 0x0, received 0xff")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e020001ff00" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Unexpected Public Key ID
+    hapd.note("EAP-PAX: Expected Public Key ID 0x0, received 0xff")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e02000100ff" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Unsupported Flags - MF
+    hapd.note("EAP-PAX: fragmentation not supported")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e0201010000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Unsupported Flags - CE
+    hapd.note("EAP-PAX: Unexpected CE flag")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e0202010000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Too short Payload in PAX_STD-2
+    hapd.note("EAP-PAX: Too short PAX_STD-2 (B)")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e0200010000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short Payload in PAX_STD-2
+    hapd.note("EAP-PAX: Too short PAX_STD-2 (CID)")
+    msg = resp[0:4] + "002c" + resp[8:12] + "002c" + "2e0200010000" + "0020" + 32*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short Payload in PAX_STD-2
+    hapd.note("EAP-PAX: Too short PAX_STD-2 (CID)")
+    msg = resp[0:4] + "002e" + resp[8:12] + "002e" + "2e0200010000" + "0020" + 32*"00" + "ffff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too long CID in PAX_STD-2
+    hapd.note("EAP-PAX: Too long CID")
+    msg = resp[0:4] + "062e" + resp[8:12] + "062e" + "2e0200010000" + "0020" + 32*"00" + "0600" + 1536*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short Payload in PAX_STD-2
+    hapd.note("EAP-PAX: Too short PAX_STD-2 (MAC_CK)")
+    msg = resp[0:4] + "003c" + resp[8:12] + "003c" + "2e0200010000" + "0020" + 32*"00" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Unknown CID for PAX
+    hapd.note("EAP-PAX: EAP-PAX not enabled for CID")
+    msg = resp[0:4] + "0041" + resp[8:12] + "0041" + "2e0200010000" + "0020" + 32*"00" + "0001" + "00" + "0010" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short ICV
+    hapd.note("EAP-PAX: Too short ICV (15) in PAX_STD-2")
+    msg = resp[0:4] + "0063" + resp[8:12] + "0063" + resp[16:206]
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_pax_assoc(dev[0], hapd)
+
+    start_pax_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PAX_STD-2
+    proxy_msg(hapd, dev[0]) # PAX_STD-3
+    resp = rx_msg(dev[0])
+    # Unexpected PAX_STD-2
+    hapd.note("EAP-PAX: Expected PAX-ACK - ignore op 1")
+    msg = resp[0:4] + "001a" + resp[8:12] + "001a" + "2e0100000000" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    stop_pax_assoc(dev[0], hapd)
+
 def test_eap_proto_psk(dev, apdev):
     """EAP-PSK protocol tests"""
     def psk_handler(ctx, req):
-        logger.info("psk_handler - RX " + req.encode("hex"))
+        logger.info("psk_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -2846,6 +3594,7 @@ def test_eap_proto_psk(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 6):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2878,6 +3627,7 @@ def test_eap_proto_psk_errors(dev, apdev):
     check_eap_capa(dev[0], "PSK")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 3):
         with alloc_fail(dev[0], i, "eap_psk_init"):
@@ -2905,15 +3655,15 @@ def test_eap_proto_psk_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "=eap_psk_process_1"),
-              (2, "=eap_psk_process_1"),
-              (1, "eap_msg_alloc;eap_psk_process_1"),
-              (1, "=eap_psk_process_3"),
-              (2, "=eap_psk_process_3"),
-              (1, "eap_msg_alloc;eap_psk_process_3"),
-              (1, "eap_psk_getKey"),
-              (1, "eap_psk_get_session_id"),
-              (1, "eap_psk_get_emsk") ]
+    tests = [(1, "=eap_psk_process_1"),
+             (2, "=eap_psk_process_1"),
+             (1, "eap_msg_alloc;eap_psk_process_1"),
+             (1, "=eap_psk_process_3"),
+             (2, "=eap_psk_process_3"),
+             (1, "eap_msg_alloc;eap_psk_process_3"),
+             (1, "eap_psk_getKey"),
+             (1, "eap_psk_get_session_id"),
+             (1, "eap_psk_get_emsk")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2929,26 +3679,32 @@ def test_eap_proto_psk_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "os_get_random;eap_psk_process_1"),
-              (1, "omac1_aes_128;eap_psk_process_3"),
-              (1, "aes_128_eax_decrypt;eap_psk_process_3"),
-              (2, "aes_128_eax_decrypt;eap_psk_process_3"),
-              (3, "aes_128_eax_decrypt;eap_psk_process_3"),
-              (1, "aes_128_eax_encrypt;eap_psk_process_3"),
-              (2, "aes_128_eax_encrypt;eap_psk_process_3"),
-              (3, "aes_128_eax_encrypt;eap_psk_process_3"),
-              (1, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (2, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (3, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (4, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (5, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (6, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (7, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (8, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (9, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (10, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
-              (1, "aes_ctr_encrypt;aes_128_eax_decrypt;eap_psk_process_3"),
-              (1, "aes_ctr_encrypt;aes_128_eax_encrypt;eap_psk_process_3") ]
+    tests = [(1, "os_get_random;eap_psk_process_1"),
+             (1, "omac1_aes_128;eap_psk_process_3"),
+             (1, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_encrypt"),
+             (2, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_encrypt"),
+             (3, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_encrypt"),
+             (1, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_decrypt"),
+             (2, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_decrypt"),
+             (3, "=omac1_aes_vector;omac1_aes_128;aes_128_eax_decrypt"),
+             (1, "aes_128_eax_decrypt;eap_psk_process_3"),
+             (2, "aes_128_eax_decrypt;eap_psk_process_3"),
+             (3, "aes_128_eax_decrypt;eap_psk_process_3"),
+             (1, "aes_128_eax_encrypt;eap_psk_process_3"),
+             (2, "aes_128_eax_encrypt;eap_psk_process_3"),
+             (3, "aes_128_eax_encrypt;eap_psk_process_3"),
+             (1, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (2, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (3, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (4, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (5, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (6, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (7, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (8, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (9, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (10, "aes_128_encrypt_block;eap_psk_derive_keys;eap_psk_process_3"),
+             (1, "aes_ctr_encrypt;aes_128_eax_decrypt;eap_psk_process_3"),
+             (1, "aes_ctr_encrypt;aes_128_eax_encrypt;eap_psk_process_3")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -2963,6 +3719,152 @@ def test_eap_proto_psk_errors(dev, apdev):
                               note="No failure seen for %d:%s" % (count, func))
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
+            dev[0].dump_monitor()
+
+def run_eap_psk_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="PSK", identity="psk.user@example.com",
+                password_hex="0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_psk_errors_server(dev, apdev):
+    """EAP-PSK local error cases on server"""
+    check_eap_capa(dev[0], "PSK")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_psk_init"),
+             (1, "eap_msg_alloc;eap_psk_build_1"),
+             (1, "eap_msg_alloc;eap_psk_build_3"),
+             (1, "=eap_psk_build_3"),
+             (1, "=eap_psk_process_2"),
+             (2, "=eap_psk_process_2"),
+             (1, "=eap_psk_process_4"),
+             (1, "aes_128_eax_decrypt;eap_psk_process_4"),
+             (1, "eap_psk_getKey"),
+             (1, "eap_psk_get_emsk"),
+             (1, "eap_psk_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_psk_connect(dev[0])
+
+    tests = [(1, "os_get_random;eap_psk_build_1"),
+             (1, "omac1_aes_128;eap_psk_build_3"),
+             (1, "eap_psk_derive_keys;eap_psk_build_3"),
+             (1, "aes_128_eax_encrypt;eap_psk_build_3"),
+             (1, "eap_psk_key_setup;eap_psk_process_2"),
+             (1, "omac1_aes_128;eap_psk_process_2"),
+             (1, "aes_128_eax_decrypt;eap_psk_process_4")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_psk_connect(dev[0])
+
+def start_psk_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="PSK", identity="psk.user@example.com",
+                password_hex="0123456789abcdef0123456789abcdef",
+                wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # PSK-1
+
+def stop_psk_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_psk_server(dev, apdev):
+    """EAP-PSK protocol testing for the server"""
+    check_eap_capa(dev[0], "PSK")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_psk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PSK-2
+    proxy_msg(hapd, dev[0]) # PSK-3
+    proxy_msg(dev[0], hapd) # PSK-4
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 1/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 2/4
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 3/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 4/4
+    dev[0].wait_connected()
+    stop_psk_assoc(dev[0], hapd)
+
+    start_psk_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-PSK header (no Flags)
+    hapd.note("EAP-PSK: Invalid frame")
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "2f"
+    tx_msg(dev[0], hapd, msg)
+    # Unexpected PSK-1
+    hapd.note("EAP-PSK: Expected PSK-2 - ignore T=0")
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "2f00"
+    tx_msg(dev[0], hapd, msg)
+    # Too short PSK-2
+    hapd.note("EAP-PSK: Too short frame")
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "2f40"
+    tx_msg(dev[0], hapd, msg)
+    # PSK-2 with unknown ID_P
+    hapd.note("EAP-PSK: EAP-PSK not enabled for ID_P")
+    msg = resp[0:4] + "004a" + resp[8:12] + "004a" + "2f40" + 3*16*"00" + 20*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # EAP-Failure
+    stop_psk_assoc(dev[0], hapd)
+
+    start_psk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PSK-2
+    proxy_msg(hapd, dev[0]) # PSK-3
+    resp = rx_msg(dev[0])
+    # Unexpected PSK-2
+    hapd.note("EAP-PSK: Expected PSK-4 - ignore T=1")
+    msg = resp[0:4] + "0016" + resp[8:12] + "0016" + "2f40" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    # Too short PSK-4 (no PCHANNEL)
+    hapd.note("EAP-PSK: Too short PCHANNEL data in PSK-4 (len=0, expected 21)")
+    msg = resp[0:4] + "0016" + resp[8:12] + "0016" + "2fc0" + 16*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # PSK-3 retry
+    stop_psk_assoc(dev[0], hapd)
+
+    start_psk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PSK-2
+    proxy_msg(hapd, dev[0]) # PSK-3
+    resp = rx_msg(dev[0])
+    # PCHANNEL Nonce did not increase
+    hapd.note("EAP-PSK: Nonce did not increase")
+    msg = resp[0:4] + "002b" + resp[8:12] + "002b" + "2fc0" + 16*"00" + 21*"00"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # PSK-3 retry
+    stop_psk_assoc(dev[0], hapd)
+
+    start_psk_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # PSK-2
+    proxy_msg(hapd, dev[0]) # PSK-3
+    resp = rx_msg(dev[0])
+    # Invalid PCHANNEL encryption
+    hapd.note("EAP-PSK: PCHANNEL decryption failed")
+    msg = resp[0:4] + "002b" + resp[8:12] + "002b" + "2fc0" + 16*"00" + 21*"11"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd) # PSK-3 retry
+    stop_psk_assoc(dev[0], hapd)
 
 EAP_SIM_SUBTYPE_START = 10
 EAP_SIM_SUBTYPE_CHALLENGE = 11
@@ -3009,7 +3911,7 @@ EAP_SIM_AT_BIDDING = 136
 def test_eap_proto_aka(dev, apdev):
     """EAP-AKA protocol tests"""
     def aka_handler(ctx, req):
-        logger.info("aka_handler - RX " + req.encode("hex"))
+        logger.info("aka_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -3678,6 +4580,7 @@ def test_eap_proto_aka(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 49):
             eap = "AKA AKA'" if i == 11 else "AKA"
@@ -3689,7 +4592,7 @@ def test_eap_proto_aka(dev, apdev):
                                    timeout=15)
             if ev is None:
                 raise Exception("Timeout on EAP start")
-            if i in [ 0, 15 ]:
+            if i in [0, 15]:
                 time.sleep(0.1)
             else:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
@@ -3704,7 +4607,7 @@ def test_eap_proto_aka(dev, apdev):
 def test_eap_proto_aka_prime(dev, apdev):
     """EAP-AKA' protocol tests"""
     def aka_prime_handler(ctx, req):
-        logger.info("aka_prime_handler - RX " + req.encode("hex"))
+        logger.info("aka_prime_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -4105,6 +5008,7 @@ def test_eap_proto_aka_prime(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 18):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4115,7 +5019,7 @@ def test_eap_proto_aka_prime(dev, apdev):
                                    timeout=15)
             if ev is None:
                 raise Exception("Timeout on EAP start")
-            if i in [ 0 ]:
+            if i in [0]:
                 time.sleep(0.1)
             else:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
@@ -4130,7 +5034,7 @@ def test_eap_proto_aka_prime(dev, apdev):
 def test_eap_proto_sim(dev, apdev):
     """EAP-SIM protocol tests"""
     def sim_handler(ctx, req):
-        logger.info("sim_handler - RX " + req.encode("hex"))
+        logger.info("sim_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -4510,6 +5414,7 @@ def test_eap_proto_sim(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 25):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4520,7 +5425,7 @@ def test_eap_proto_sim(dev, apdev):
                                    timeout=15)
             if ev is None:
                 raise Exception("Timeout on EAP start")
-            if i in [ 0 ]:
+            if i in [0]:
                 time.sleep(0.1)
             else:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
@@ -4537,6 +5442,7 @@ def test_eap_proto_sim_errors(dev, apdev):
     check_hlr_auc_gw_support()
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1, "eap_sim_init"):
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4614,18 +5520,18 @@ def test_eap_proto_sim_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].dump_monitor()
 
-    tests = [ (1, "eap_sim_verify_mac;eap_sim_process_challenge"),
-              (1, "eap_sim_parse_encr;eap_sim_process_challenge"),
-              (1, "eap_sim_msg_init;eap_sim_response_start"),
-              (1, "wpabuf_alloc;eap_sim_msg_init;eap_sim_response_start"),
-              (1, "=eap_sim_learn_ids"),
-              (2, "=eap_sim_learn_ids"),
-              (2, "eap_sim_learn_ids"),
-              (3, "eap_sim_learn_ids"),
-              (1, "eap_sim_process_start"),
-              (1, "eap_sim_getKey"),
-              (1, "eap_sim_get_emsk"),
-              (1, "eap_sim_get_session_id") ]
+    tests = [(1, "eap_sim_verify_mac;eap_sim_process_challenge"),
+             (1, "eap_sim_parse_encr;eap_sim_process_challenge"),
+             (1, "eap_sim_msg_init;eap_sim_response_start"),
+             (1, "wpabuf_alloc;eap_sim_msg_init;eap_sim_response_start"),
+             (1, "=eap_sim_learn_ids"),
+             (2, "=eap_sim_learn_ids"),
+             (2, "eap_sim_learn_ids"),
+             (3, "eap_sim_learn_ids"),
+             (1, "eap_sim_process_start"),
+             (1, "eap_sim_getKey"),
+             (1, "eap_sim_get_emsk"),
+             (1, "eap_sim_get_session_id")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4636,7 +5542,7 @@ def test_eap_proto_sim_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].dump_monitor()
 
-    tests = [ (1, "aes_128_cbc_decrypt;eap_sim_parse_encr") ]
+    tests = [(1, "aes_128_cbc_decrypt;eap_sim_parse_encr")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4650,7 +5556,8 @@ def test_eap_proto_sim_errors(dev, apdev):
     params = int_eap_server_params()
     params['eap_sim_db'] = "unix:/tmp/hlr_auc_gw.sock"
     params['eap_sim_aka_result_ind'] = "1"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    dev[0].scan_for_bss(hapd2.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1,
                     "eap_sim_msg_init;eap_sim_response_notification"):
@@ -4664,8 +5571,8 @@ def test_eap_proto_sim_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].dump_monitor()
 
-    tests = [ "eap_sim_msg_add_encr_start;eap_sim_response_notification",
-              "aes_128_cbc_encrypt;eap_sim_response_notification" ]
+    tests = ["eap_sim_msg_add_encr_start;eap_sim_response_notification",
+             "aes_128_cbc_encrypt;eap_sim_response_notification"]
     for func in tests:
         with fail_test(dev[0], 1, func):
             dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
@@ -4682,7 +5589,7 @@ def test_eap_proto_sim_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].dump_monitor()
 
-    tests = [ "eap_sim_parse_encr;eap_sim_process_notification_reauth" ]
+    tests = ["eap_sim_parse_encr;eap_sim_process_notification_reauth"]
     for func in tests:
         with alloc_fail(dev[0], 1, func):
             dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
@@ -4704,6 +5611,7 @@ def test_eap_proto_aka_errors(dev, apdev):
     check_hlr_auc_gw_support()
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1, "eap_aka_init"):
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4717,14 +5625,13 @@ def test_eap_proto_aka_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].wait_disconnected()
 
-    tests = [ (1, "=eap_aka_learn_ids"),
-              (2, "=eap_aka_learn_ids"),
-              (1, "eap_sim_parse_encr;eap_aka_process_challenge"),
-              (1, "wpabuf_dup;eap_aka_add_id_msg"),
-              (1, "wpabuf_resize;eap_aka_add_id_msg"),
-              (1, "eap_aka_getKey"),
-              (1, "eap_aka_get_emsk"),
-              (1, "eap_aka_get_session_id") ]
+    tests = [(1, "=eap_aka_learn_ids"),
+             (2, "=eap_aka_learn_ids"),
+             (1, "eap_sim_parse_encr;eap_aka_process_challenge"),
+             (1, "wpabuf_alloc;eap_aka_add_id_msg"),
+             (1, "eap_aka_getKey"),
+             (1, "eap_aka_get_emsk"),
+             (1, "eap_aka_get_session_id")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4738,7 +5645,8 @@ def test_eap_proto_aka_errors(dev, apdev):
     params = int_eap_server_params()
     params['eap_sim_db'] = "unix:/tmp/hlr_auc_gw.sock"
     params['eap_sim_aka_result_ind'] = "1"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    dev[0].scan_for_bss(hapd2.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1,
                     "eap_sim_msg_init;eap_aka_response_notification"):
@@ -4751,8 +5659,30 @@ def test_eap_proto_aka_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].dump_monitor()
 
-    tests = [ "eap_sim_msg_add_encr_start;eap_aka_response_notification",
-              "aes_128_cbc_encrypt;eap_aka_response_notification" ]
+    tests = [(1, "aes_128_encrypt_block;milenage_f1;milenage_check", None),
+             (2, "aes_128_encrypt_block;milenage_f1;milenage_check", None),
+             (1, "milenage_f2345;milenage_check", None),
+             (7, "aes_128_encrypt_block;milenage_f2345;milenage_check",
+              "ff0000000123"),
+             (1, "aes_128_encrypt_block;milenage_f1;milenage_check",
+              "fff000000123")]
+    for count, func, seq in tests:
+        if not seq:
+            seq = "000000000123"
+        with fail_test(dev[0], count, func):
+            dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                           scan_freq="2412",
+                           eap="AKA", identity="0232010000000000",
+                           phase1="result_ind=1",
+                           password="90dca4eda45b53cf0f12d7c9c3bc6a89:cb9cccc4b9258e6dca4760379fb82581:" + seq,
+                           wait_connect=False)
+            wait_fail_trigger(dev[0], "GET_FAIL")
+            dev[0].request("REMOVE_NETWORK all")
+            dev[0].wait_disconnected()
+            dev[0].dump_monitor()
+
+    tests = ["eap_sim_msg_add_encr_start;eap_aka_response_notification",
+             "aes_128_cbc_encrypt;eap_aka_response_notification"]
     for func in tests:
         with fail_test(dev[0], 1, func):
             dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
@@ -4769,7 +5699,7 @@ def test_eap_proto_aka_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].dump_monitor()
 
-    tests = [ "eap_sim_parse_encr;eap_aka_process_notification_reauth" ]
+    tests = ["eap_sim_parse_encr;eap_aka_process_notification_reauth"]
     for func in tests:
         with alloc_fail(dev[0], 1, func):
             dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
@@ -4791,6 +5721,7 @@ def test_eap_proto_aka_prime_errors(dev, apdev):
     check_hlr_auc_gw_support()
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1, "eap_aka_init"):
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4830,8 +5761,8 @@ def test_eap_proto_aka_prime_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].dump_monitor()
 
-    tests = [ (1, "eap_sim_verify_mac_sha256"),
-              (1, "=eap_aka_process_challenge") ]
+    tests = [(1, "eap_sim_verify_mac_sha256"),
+             (1, "=eap_aka_process_challenge")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -4850,7 +5781,7 @@ def test_eap_proto_ikev2(dev, apdev):
     eap_proto_ikev2_test_done = False
 
     def ikev2_handler(ctx, req):
-        logger.info("ikev2_handler - RX " + req.encode("hex"))
+        logger.info("ikev2_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -5000,7 +5931,7 @@ def test_eap_proto_ikev2(dev, apdev):
                                0, 0, 0, 0,
                                0, 0x20, 34, 0x08, 0, 28)
 
-        def build_ike(id, next=0, exch_type=34, flags=0x00, ike=''):
+        def build_ike(id, next=0, exch_type=34, flags=0x00, ike=b''):
             return struct.pack(">BBHBB2L2LBBBBLL", EAP_CODE_REQUEST, id,
                                4 + 1 + 1 + 28 + len(ike),
                                EAP_TYPE_IKEV2, flags,
@@ -5188,7 +6119,7 @@ def test_eap_proto_ikev2(dev, apdev):
             logger.info("Test: Mismatch in DH Group in SAi1")
             ike = build_sa(next=34)
             ike += struct.pack(">BBHHH", 0, 0, 4 + 4 + 96, 12345, 0)
-            ike += 96*'\x00'
+            ike += 96*b'\x00'
             return build_ike(ctx['id'], next=33, ike=ike)
         idx += 1
         if ctx['num'] == idx:
@@ -5200,12 +6131,12 @@ def test_eap_proto_ikev2(dev, apdev):
             logger.info("Test: Invalid DH public value length in SAi1")
             ike = build_sa(next=34)
             ike += struct.pack(">BBHHH", 0, 0, 4 + 4 + 96, 5, 0)
-            ike += 96*'\x00'
+            ike += 96*b'\x00'
             return build_ike(ctx['id'], next=33, ike=ike)
 
         def build_ke(next=0):
             ke = struct.pack(">BBHHH", next, 0, 4 + 4 + 192, 5, 0)
-            ke += 191*'\x00'+'\x02'
+            ke += 191*b'\x00'+b'\x02'
             return ke
 
         idx += 1
@@ -5228,11 +6159,11 @@ def test_eap_proto_ikev2(dev, apdev):
             logger.info("Test: Too long Ni in SAi1")
             ike = build_sa(next=34)
             ike += build_ke(next=40)
-            ike += struct.pack(">BBH", 0, 0, 4 + 257) + 257*'\x00'
+            ike += struct.pack(">BBH", 0, 0, 4 + 257) + 257*b'\x00'
             return build_ike(ctx['id'], next=33, ike=ike)
 
         def build_ni(next=0):
-            return struct.pack(">BBH", next, 0, 4 + 256) + 256*'\x00'
+            return struct.pack(">BBH", next, 0, 4 + 256) + 256*b'\x00'
 
         def build_sai1(id):
             ike = build_sa(next=34)
@@ -5256,7 +6187,7 @@ def test_eap_proto_ikev2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: No integrity checksum")
-            ike = ''
+            ike = b''
             return build_ike(ctx['id'], next=37, ike=ike)
 
         idx += 1
@@ -5278,7 +6209,7 @@ def test_eap_proto_ikev2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Invalid integrity checksum")
-            ike = ''
+            ike = b''
             return build_ike(ctx['id'], next=37, flags=0x20, ike=ike)
 
         idx += 1
@@ -5295,6 +6226,7 @@ def test_eap_proto_ikev2(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_ikev2_test_done:
@@ -5311,7 +6243,7 @@ def test_eap_proto_ikev2(dev, apdev):
                                    timeout=15)
             if ev is None:
                 raise Exception("Timeout on EAP method start")
-            if i in [ 41, 46 ]:
+            if i in [41, 46]:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
                                        timeout=10)
                 if ev is None:
@@ -5347,7 +6279,7 @@ def GenerateAuthenticatorResponse(password, nt_response, peer_challenge,
     data = password_hash_hash + nt_response + magic1
     digest = hashlib.sha1(data).digest()
 
-    challenge = ChallengeHash(peer_challenge, auth_challenge, username)
+    challenge = ChallengeHash(peer_challenge, auth_challenge, username.encode())
 
     data = digest + challenge + magic2
     resp = hashlib.sha1(data).digest()
@@ -5358,6 +6290,7 @@ def test_eap_proto_ikev2_errors(dev, apdev):
     check_eap_capa(dev[0], "IKEV2")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 5):
         with alloc_fail(dev[0], i, "eap_ikev2_init"):
@@ -5372,40 +6305,40 @@ def test_eap_proto_ikev2_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "ikev2_encr_encrypt"),
-              (1, "ikev2_encr_decrypt"),
-              (1, "ikev2_derive_auth_data"),
-              (2, "ikev2_derive_auth_data"),
-              (1, "=ikev2_decrypt_payload"),
-              (1, "ikev2_encr_decrypt;ikev2_decrypt_payload"),
-              (1, "ikev2_encr_encrypt;ikev2_build_encrypted"),
-              (1, "ikev2_derive_sk_keys"),
-              (2, "ikev2_derive_sk_keys"),
-              (3, "ikev2_derive_sk_keys"),
-              (4, "ikev2_derive_sk_keys"),
-              (5, "ikev2_derive_sk_keys"),
-              (6, "ikev2_derive_sk_keys"),
-              (7, "ikev2_derive_sk_keys"),
-              (8, "ikev2_derive_sk_keys"),
-              (1, "eap_ikev2_derive_keymat;eap_ikev2_peer_keymat"),
-              (1, "eap_msg_alloc;eap_ikev2_build_msg"),
-              (1, "eap_ikev2_getKey"),
-              (1, "eap_ikev2_get_emsk"),
-              (1, "eap_ikev2_get_session_id"),
-              (1, "=ikev2_derive_keys"),
-              (2, "=ikev2_derive_keys"),
-              (1, "wpabuf_alloc;ikev2_process_kei"),
-              (1, "=ikev2_process_idi"),
-              (1, "ikev2_derive_auth_data;ikev2_build_auth"),
-              (1, "wpabuf_alloc;ikev2_build_sa_init"),
-              (2, "wpabuf_alloc;ikev2_build_sa_init"),
-              (3, "wpabuf_alloc;ikev2_build_sa_init"),
-              (4, "wpabuf_alloc;ikev2_build_sa_init"),
-              (5, "wpabuf_alloc;ikev2_build_sa_init"),
-              (6, "wpabuf_alloc;ikev2_build_sa_init"),
-              (1, "wpabuf_alloc;ikev2_build_sa_auth"),
-              (2, "wpabuf_alloc;ikev2_build_sa_auth"),
-              (1, "ikev2_build_auth;ikev2_build_sa_auth") ]
+    tests = [(1, "ikev2_encr_encrypt"),
+             (1, "ikev2_encr_decrypt"),
+             (1, "ikev2_derive_auth_data"),
+             (2, "ikev2_derive_auth_data"),
+             (1, "=ikev2_decrypt_payload"),
+             (1, "ikev2_encr_decrypt;ikev2_decrypt_payload"),
+             (1, "ikev2_encr_encrypt;ikev2_build_encrypted"),
+             (1, "ikev2_derive_sk_keys"),
+             (2, "ikev2_derive_sk_keys"),
+             (3, "ikev2_derive_sk_keys"),
+             (4, "ikev2_derive_sk_keys"),
+             (5, "ikev2_derive_sk_keys"),
+             (6, "ikev2_derive_sk_keys"),
+             (7, "ikev2_derive_sk_keys"),
+             (8, "ikev2_derive_sk_keys"),
+             (1, "eap_ikev2_derive_keymat;eap_ikev2_peer_keymat"),
+             (1, "eap_msg_alloc;eap_ikev2_build_msg"),
+             (1, "eap_ikev2_getKey"),
+             (1, "eap_ikev2_get_emsk"),
+             (1, "eap_ikev2_get_session_id"),
+             (1, "=ikev2_derive_keys"),
+             (2, "=ikev2_derive_keys"),
+             (1, "wpabuf_alloc;ikev2_process_kei"),
+             (1, "=ikev2_process_idi"),
+             (1, "ikev2_derive_auth_data;ikev2_build_auth"),
+             (1, "wpabuf_alloc;ikev2_build_sa_init"),
+             (2, "wpabuf_alloc;ikev2_build_sa_init"),
+             (3, "wpabuf_alloc;ikev2_build_sa_init"),
+             (4, "wpabuf_alloc;ikev2_build_sa_init"),
+             (5, "wpabuf_alloc;ikev2_build_sa_init"),
+             (6, "wpabuf_alloc;ikev2_build_sa_init"),
+             (1, "wpabuf_alloc;ikev2_build_sa_auth"),
+             (2, "wpabuf_alloc;ikev2_build_sa_auth"),
+             (1, "ikev2_build_auth;ikev2_build_sa_auth")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -5427,9 +6360,9 @@ def test_eap_proto_ikev2_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "wpabuf_alloc;ikev2_build_notify"),
-              (2, "wpabuf_alloc;ikev2_build_notify"),
-              (1, "ikev2_build_encrypted;ikev2_build_notify") ]
+    tests = [(1, "wpabuf_alloc;ikev2_build_notify"),
+             (2, "wpabuf_alloc;ikev2_build_notify"),
+             (1, "ikev2_build_encrypted;ikev2_build_notify")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -5452,18 +6385,18 @@ def test_eap_proto_ikev2_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "ikev2_integ_hash"),
-              (1, "ikev2_integ_hash;ikev2_decrypt_payload"),
-              (1, "os_get_random;ikev2_build_encrypted"),
-              (1, "ikev2_prf_plus;ikev2_derive_sk_keys"),
-              (1, "eap_ikev2_derive_keymat;eap_ikev2_peer_keymat"),
-              (1, "os_get_random;ikev2_build_sa_init"),
-              (2, "os_get_random;ikev2_build_sa_init"),
-              (1, "ikev2_integ_hash;eap_ikev2_validate_icv"),
-              (1, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_keys"),
-              (1, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data"),
-              (2, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data"),
-              (3, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data") ]
+    tests = [(1, "ikev2_integ_hash"),
+             (1, "ikev2_integ_hash;ikev2_decrypt_payload"),
+             (1, "os_get_random;ikev2_build_encrypted"),
+             (1, "ikev2_prf_plus;ikev2_derive_sk_keys"),
+             (1, "eap_ikev2_derive_keymat;eap_ikev2_peer_keymat"),
+             (1, "os_get_random;ikev2_build_sa_init"),
+             (2, "os_get_random;ikev2_build_sa_init"),
+             (1, "ikev2_integ_hash;eap_ikev2_validate_icv"),
+             (1, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_keys"),
+             (1, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data"),
+             (2, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data"),
+             (3, "hmac_sha1_vector;?ikev2_prf_hash;ikev2_derive_auth_data")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -5485,14 +6418,15 @@ def test_eap_proto_ikev2_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    params = { "ssid": "eap-test2", "wpa": "2", "wpa_key_mgmt": "WPA-EAP",
-               "rsn_pairwise": "CCMP", "ieee8021x": "1",
-               "eap_server": "1", "eap_user_file": "auth_serv/eap_user.conf",
-               "fragment_size": "50" }
-    hostapd.add_ap(apdev[1], params)
+    params = {"ssid": "eap-test2", "wpa": "2", "wpa_key_mgmt": "WPA-EAP",
+              "rsn_pairwise": "CCMP", "ieee8021x": "1",
+              "eap_server": "1", "eap_user_file": "auth_serv/eap_user.conf",
+              "fragment_size": "50"}
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    dev[0].scan_for_bss(hapd2.own_addr(), freq=2412)
 
-    tests = [ (1, "eap_ikev2_build_frag_ack"),
-              (1, "wpabuf_alloc;eap_ikev2_process_fragment") ]
+    tests = [(1, "eap_ikev2_build_frag_ack"),
+             (1, "wpabuf_alloc;eap_ikev2_process_fragment")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test2", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -5514,12 +6448,224 @@ def test_eap_proto_ikev2_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
+def run_eap_ikev2_connect(dev):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="IKEV2", identity="ikev2 user",
+                password="ike password",
+                fragment_size="30", wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_ikev2_errors_server(dev, apdev):
+    """EAP-IKEV2 local error cases on server"""
+    check_eap_capa(dev[0], "IKEV2")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_ikev2_init"),
+             (2, "=eap_ikev2_init"),
+             (3, "=eap_ikev2_init"),
+             (1, "eap_msg_alloc;eap_ikev2_build_msg"),
+             (1, "ikev2_initiator_build;eap_ikev2_buildReq"),
+             (1, "eap_ikev2_process_fragment"),
+             (1, "wpabuf_alloc_copy;ikev2_process_ker"),
+             (1, "ikev2_process_idr"),
+             (1, "ikev2_derive_auth_data;ikev2_process_auth_secret"),
+             (1, "ikev2_decrypt_payload;ikev2_process_sa_auth"),
+             (1, "ikev2_process_sa_auth_decrypted;ikev2_process_sa_auth"),
+             (1, "dh_init;ikev2_build_kei"),
+             (1, "ikev2_build_auth"),
+             (1, "wpabuf_alloc;ikev2_build_sa_init"),
+             (1, "ikev2_build_sa_auth"),
+             (1, "=ikev2_build_sa_auth"),
+             (2, "=ikev2_derive_auth_data"),
+             (1, "wpabuf_alloc;ikev2_build_sa_auth"),
+             (2, "wpabuf_alloc;=ikev2_build_sa_auth"),
+             (1, "ikev2_decrypt_payload;ikev2_process_sa_init_encr"),
+             (1, "dh_derive_shared;ikev2_derive_keys"),
+             (1, "=ikev2_derive_keys"),
+             (2, "=ikev2_derive_keys"),
+             (1, "eap_ikev2_getKey"),
+             (1, "eap_ikev2_get_emsk"),
+             (1, "eap_ikev2_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_ikev2_connect(dev[0])
+
+    tests = [(1, "eap_ikev2_validate_icv;eap_ikev2_process_icv"),
+             (1, "eap_ikev2_server_keymat"),
+             (1, "ikev2_build_auth"),
+             (1, "os_get_random;ikev2_build_sa_init"),
+             (2, "os_get_random;ikev2_build_sa_init"),
+             (1, "ikev2_derive_keys"),
+             (2, "ikev2_derive_keys"),
+             (3, "ikev2_derive_keys"),
+             (4, "ikev2_derive_keys"),
+             (5, "ikev2_derive_keys"),
+             (6, "ikev2_derive_keys"),
+             (7, "ikev2_derive_keys"),
+             (8, "ikev2_derive_keys"),
+             (1, "ikev2_decrypt_payload;ikev2_process_sa_auth"),
+             (1, "eap_ikev2_process_icv;eap_ikev2_process")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_ikev2_connect(dev[0])
+
+def start_ikev2_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
+                eap="IKEV2", identity="ikev2 user",
+                password="ike password", wait_connect=False)
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # IKEV2 1
+
+def stop_ikev2_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_ikev2_server(dev, apdev):
+    """EAP-IKEV2 protocol testing for the server"""
+    check_eap_capa(dev[0], "IKEV2")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    # Successful exchange to verify proxying mechanism
+    start_ikev2_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # IKEV2 2
+    proxy_msg(hapd, dev[0]) # IKEV2 3
+    proxy_msg(dev[0], hapd) # IKEV2 4
+    proxy_msg(hapd, dev[0]) # EAP-Success
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 1/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 2/4
+    proxy_msg(hapd, dev[0]) # EAPOL-Key msg 3/4
+    proxy_msg(dev[0], hapd) # EAPOL-Key msg 4/4
+    dev[0].wait_connected()
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-IKEV2 header
+    hapd.note("IKEV2: Too short frame to include HDR")
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "31"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-IKEV2 header - missing Message Length field
+    hapd.note("EAP-IKEV2: Message underflow")
+    msg = resp[0:4] + "0006" + resp[8:12] + "0006" + "3180"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-IKEV2 header - too small Message Length
+    hapd.note("EAP-IKEV2: Invalid Message Length (0; 1 remaining in this msg)")
+    msg = resp[0:4] + "000b" + resp[8:12] + "000b" + "318000000000ff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short EAP-IKEV2 header - too large Message Length
+    hapd.note("EAP-IKEV2: Ignore too long message")
+    msg = resp[0:4] + "000b" + resp[8:12] + "000b" + "31c0bbccddeeff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # No Message Length in first fragment
+    hapd.note("EAP-IKEV2: No Message Length field in a fragmented packet")
+    msg = resp[0:4] + "0007" + resp[8:12] + "0007" + "3140ff"
+    tx_msg(dev[0], hapd, msg)
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # First fragment (valid)
+    hapd.note("EAP-IKEV2: Received 1 bytes in first fragment, waiting for 255 bytes more")
+    msg = resp[0:4] + "000b" + resp[8:12] + "000b" + "31c000000100ff"
+    tx_msg(dev[0], hapd, msg)
+    req = rx_msg(hapd)
+    id, = struct.unpack('B', binascii.unhexlify(req)[5:6])
+    hapd.note("EAP-IKEV2: Received 1 bytes in first fragment, waiting for 254 bytes more")
+    payload = struct.pack('BBB', 49, 0x40, 0)
+    msg = struct.pack('>BBHBBH', 1, 0, 4 + len(payload), 2, id, 4 + len(payload)) + payload
+    tx_msg(dev[0], hapd, binascii.hexlify(msg).decode())
+    req = rx_msg(hapd)
+    id, = struct.unpack('B', binascii.unhexlify(req)[5:6])
+    hapd.note("EAP-IKEV2: Fragment overflow")
+    payload = struct.pack('BB', 49, 0x40) + 255*b'\x00'
+    msg = struct.pack('>BBHBBH', 1, 0, 4 + len(payload), 2, id, 4 + len(payload)) + payload
+    tx_msg(dev[0], hapd, binascii.hexlify(msg).decode())
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    start_ikev2_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # IKEV2 2
+    req = proxy_msg(hapd, dev[0]) # IKEV2 3
+    id, = struct.unpack('B', binascii.unhexlify(req)[5:6])
+    # Missing ICV
+    hapd.note("EAP-IKEV2: The message should have included integrity checksum")
+    payload = struct.pack('BB', 49, 0) + b'\x00'
+    msg = struct.pack('>BBHBBH', 1, 0, 4 + len(payload), 2, id, 4 + len(payload)) + payload
+    tx_msg(dev[0], hapd, binascii.hexlify(msg).decode())
+    rx_msg(hapd)
+    stop_ikev2_assoc(dev[0], hapd)
+
+    tests = [("Unsupported HDR version 0x0 (expected 0x20)",
+              struct.pack('BB', 49, 0) + 16*b'\x00' +
+              struct.pack('>BBBBLL', 0, 0, 0, 0, 0, 0)),
+             ("IKEV2: Invalid length (HDR: 0 != RX: 28)",
+              struct.pack('BB', 49, 0) + 16*b'\x00' +
+              struct.pack('>BBBBLL', 0, 0x20, 0, 0, 0, 0)),
+             ("IKEV2: Unexpected Exchange Type 0 in SA_INIT state",
+              struct.pack('BB', 49, 0) + 16*b'\x00' +
+              struct.pack('>BBBBLL', 0, 0x20, 0, 0, 0, 28)),
+             ("IKEV2: Unexpected Flags value 0x0",
+              struct.pack('BB', 49, 0) + 16*b'\x00' +
+              struct.pack('>BBBBLL', 0, 0x20, 34, 0, 0, 28)),
+             ("IKEV2: SAr1 not received",
+              struct.pack('BB', 49, 0) + 16*b'\x00' +
+              struct.pack('>BBBBLL', 0, 0x20, 34, 0x20, 0, 28))]
+    for txt, payload in tests:
+        start_ikev2_assoc(dev[0], hapd)
+        resp = rx_msg(dev[0])
+        id, = struct.unpack('B', binascii.unhexlify(resp)[5:6])
+        hapd.note(txt)
+        msg = struct.pack('>BBHBBH', 1, 0, 4 + len(payload), 2, id, 4 + len(payload)) + payload
+        tx_msg(dev[0], hapd, binascii.hexlify(msg).decode())
+        rx_msg(hapd)
+        stop_ikev2_assoc(dev[0], hapd)
+
 def test_eap_proto_mschapv2(dev, apdev):
     """EAP-MSCHAPv2 protocol tests"""
     check_eap_capa(dev[0], "MSCHAPV2")
 
     def mschapv2_handler(ctx, req):
-        logger.info("mschapv2_handler - RX " + req.encode("hex"))
+        logger.info("mschapv2_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -5574,7 +6720,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure before challenge - invalid failure challenge len")
-            payload = 'C=12'
+            payload = b'C=12'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5587,7 +6733,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure before challenge - invalid failure challenge len")
-            payload = 'C=12 V=3'
+            payload = b'C=12 V=3'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5600,7 +6746,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure before challenge - invalid failure challenge")
-            payload = 'C=00112233445566778899aabbccddeefQ '
+            payload = b'C=00112233445566778899aabbccddeefQ '
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5613,7 +6759,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure before challenge - password expired")
-            payload = 'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
+            payload = b'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5621,7 +6767,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Success after password change")
-            payload = "S=1122334455667788990011223344556677889900"
+            payload = b"S=1122334455667788990011223344556677889900"
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5649,11 +6795,11 @@ def test_eap_proto_mschapv2(dev, apdev):
             return struct.pack(">BBHBBBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + 1 + 16 + 6,
                                EAP_TYPE_MSCHAPV2,
-                               1, 0, 4 + 1 + 16 + 6, 16) + 16*'A' + 'foobar'
+                               1, 0, 4 + 1 + 16 + 6, 16) + 16*b'A' + b'foobar'
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure - password expired")
-            payload = 'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
+            payload = b'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5676,19 +6822,19 @@ def test_eap_proto_mschapv2(dev, apdev):
             nt_response = data[0:24]
             data = data[24:]
             flags = data
-            logger.info("enc_hash: " + enc_hash.encode("hex"))
-            logger.info("peer_challenge: " + peer_challenge.encode("hex"))
-            logger.info("nt_response: " + nt_response.encode("hex"))
-            logger.info("flags: " + flags.encode("hex"))
+            logger.info("enc_hash: " + binascii.hexlify(enc_hash).decode())
+            logger.info("peer_challenge: " + binascii.hexlify(peer_challenge).decode())
+            logger.info("nt_response: " + binascii.hexlify(nt_response).decode())
+            logger.info("flags: " + binascii.hexlify(flags).decode())
 
             auth_challenge = binascii.unhexlify("00112233445566778899aabbccddeeff")
-            logger.info("auth_challenge: " + auth_challenge.encode("hex"))
+            logger.info("auth_challenge: " + binascii.hexlify(auth_challenge).decode())
 
             auth_resp = GenerateAuthenticatorResponse("new-pw", nt_response,
                                                       peer_challenge,
                                                       auth_challenge, "user")
-            payload = "S=" + auth_resp.encode('hex').upper()
-            logger.info("Success message payload: " + payload)
+            payload = b"S=" + binascii.hexlify(auth_resp).decode().upper().encode()
+            logger.info("Success message payload: " + payload.decode())
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5701,7 +6847,7 @@ def test_eap_proto_mschapv2(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure - password expired")
-            payload = 'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
+            payload = b'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5724,19 +6870,19 @@ def test_eap_proto_mschapv2(dev, apdev):
             nt_response = data[0:24]
             data = data[24:]
             flags = data
-            logger.info("enc_hash: " + enc_hash.encode("hex"))
-            logger.info("peer_challenge: " + peer_challenge.encode("hex"))
-            logger.info("nt_response: " + nt_response.encode("hex"))
-            logger.info("flags: " + flags.encode("hex"))
+            logger.info("enc_hash: " + binascii.hexlify(enc_hash).decode())
+            logger.info("peer_challenge: " + binascii.hexlify(peer_challenge).decode())
+            logger.info("nt_response: " + binascii.hexlify(nt_response).decode())
+            logger.info("flags: " + binascii.hexlify(flags).decode())
 
             auth_challenge = binascii.unhexlify("00112233445566778899aabbccddeeff")
-            logger.info("auth_challenge: " + auth_challenge.encode("hex"))
+            logger.info("auth_challenge: " + binascii.hexlify(auth_challenge).decode())
 
             auth_resp = GenerateAuthenticatorResponse("new-pw", nt_response,
                                                       peer_challenge,
                                                       auth_challenge, "user")
-            payload = "S=" + auth_resp.encode('hex').upper()
-            logger.info("Success message payload: " + payload)
+            payload = b"S=" + binascii.hexlify(auth_resp).decode().upper().encode()
+            logger.info("Success message payload: " + payload.decode())
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5752,11 +6898,11 @@ def test_eap_proto_mschapv2(dev, apdev):
             return struct.pack(">BBHBBBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + 1 + 16 + 6,
                                EAP_TYPE_MSCHAPV2,
-                               1, 0, 4 + 1 + 16 + 6, 16) + 16*'A' + 'foobar'
+                               1, 0, 4 + 1 + 16 + 6, 16) + 16*b'A' + b'foobar'
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure - authentication failure")
-            payload = 'E=691 R=1 C=00112233445566778899aabbccddeeff V=3 M=Authentication failed'
+            payload = b'E=691 R=1 C=00112233445566778899aabbccddeeff V=3 M=Authentication failed'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5768,11 +6914,11 @@ def test_eap_proto_mschapv2(dev, apdev):
             return struct.pack(">BBHBBBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + 1 + 16 + 6,
                                EAP_TYPE_MSCHAPV2,
-                               1, 0, 4 + 1 + 16 + 6, 16) + 16*'A' + 'foobar'
+                               1, 0, 4 + 1 + 16 + 6, 16) + 16*b'A' + b'foobar'
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Failure - authentication failure")
-            payload = 'E=691 R=1 C=00112233445566778899aabbccddeeff V=3 M=Authentication failed (2)'
+            payload = b'E=691 R=1 C=00112233445566778899aabbccddeeff V=3 M=Authentication failed (2)'
             return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + len(payload),
                                EAP_TYPE_MSCHAPV2,
@@ -5788,7 +6934,7 @@ def test_eap_proto_mschapv2(dev, apdev):
             return struct.pack(">BBHBBBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + 1 + 16 + 6,
                                EAP_TYPE_MSCHAPV2,
-                               1, 0, 4 + 1 + 16 + 6 + 1, 16) + 16*'A' + 'foobar'
+                               1, 0, 4 + 1 + 16 + 6 + 1, 16) + 16*b'A' + b'foobar'
 
         return None
 
@@ -5796,6 +6942,7 @@ def test_eap_proto_mschapv2(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         for i in range(0, 16):
             logger.info("RUN: %d" % i)
@@ -5822,14 +6969,14 @@ def test_eap_proto_mschapv2(dev, apdev):
             if ev is None:
                 raise Exception("Timeout on EAP start")
 
-            if i in [ 8, 11, 12 ]:
+            if i in [8, 11, 12]:
                 ev = dev[0].wait_event(["CTRL-REQ-NEW_PASSWORD"],
                                        timeout=10)
                 if ev is None:
                     raise Exception("Timeout on new password request")
                 id = ev.split(':')[0].split('-')[-1]
                 dev[0].request("CTRL-RSP-NEW_PASSWORD-" + id + ":new-pw")
-                if i in [ 11, 12 ]:
+                if i in [11, 12]:
                     ev = dev[0].wait_event(["CTRL-EVENT-PASSWORD-CHANGED"],
                                        timeout=10)
                     if ev is None:
@@ -5844,7 +6991,7 @@ def test_eap_proto_mschapv2(dev, apdev):
                     if ev is None:
                         raise Exception("Timeout on EAP failure")
 
-            if i in [ 13 ]:
+            if i in [13]:
                 ev = dev[0].wait_event(["CTRL-REQ-IDENTITY"],
                                        timeout=10)
                 if ev is None:
@@ -5866,7 +7013,7 @@ def test_eap_proto_mschapv2(dev, apdev):
                 if ev is None:
                     raise Exception("Timeout on EAP failure")
 
-            if i in [ 4, 5, 6, 7, 14 ]:
+            if i in [4, 5, 6, 7, 14]:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"],
                                        timeout=10)
                 if ev is None:
@@ -5884,7 +7031,7 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
 
     def mschapv2_fail_password_expired(ctx):
         logger.info("Test: Failure before challenge - password expired")
-        payload = 'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
+        payload = b'E=648 R=1 C=00112233445566778899aabbccddeeff V=3 M=Password expired'
         return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                            4 + 1 + 4 + len(payload),
                            EAP_TYPE_MSCHAPV2,
@@ -5893,7 +7040,7 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
     def mschapv2_success_after_password_change(ctx, req=None):
         logger.info("Test: Success after password change")
         if req is None or len(req) != 591:
-            payload = "S=1122334455667788990011223344556677889900"
+            payload = b"S=1122334455667788990011223344556677889900"
         else:
             data = req[9:]
             enc_pw = data[0:516]
@@ -5907,25 +7054,25 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
             nt_response = data[0:24]
             data = data[24:]
             flags = data
-            logger.info("enc_hash: " + enc_hash.encode("hex"))
-            logger.info("peer_challenge: " + peer_challenge.encode("hex"))
-            logger.info("nt_response: " + nt_response.encode("hex"))
-            logger.info("flags: " + flags.encode("hex"))
+            logger.info("enc_hash: " + binascii.hexlify(enc_hash).decode())
+            logger.info("peer_challenge: " + binascii.hexlify(peer_challenge).decode())
+            logger.info("nt_response: " + binascii.hexlify(nt_response).decode())
+            logger.info("flags: " + binascii.hexlify(flags).decode())
 
             auth_challenge = binascii.unhexlify("00112233445566778899aabbccddeeff")
-            logger.info("auth_challenge: " + auth_challenge.encode("hex"))
+            logger.info("auth_challenge: " + binascii.hexlify(auth_challenge).decode())
 
             auth_resp = GenerateAuthenticatorResponse("new-pw", nt_response,
                                                       peer_challenge,
                                                       auth_challenge, "user")
-            payload = "S=" + auth_resp.encode('hex').upper()
+            payload = b"S=" + binascii.hexlify(auth_resp).decode().upper().encode()
         return struct.pack(">BBHBBBH", EAP_CODE_REQUEST, ctx['id'],
                            4 + 1 + 4 + len(payload),
                            EAP_TYPE_MSCHAPV2,
                            3, 0, 4 + len(payload)) + payload
 
     def mschapv2_handler(ctx, req):
-        logger.info("mschapv2_handler - RX " + req.encode("hex"))
+        logger.info("mschapv2_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -6030,12 +7177,13 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
-        tests = [ "os_get_random;eap_mschapv2_change_password",
-                  "generate_nt_response;eap_mschapv2_change_password",
-                  "get_master_key;eap_mschapv2_change_password",
-                  "nt_password_hash;eap_mschapv2_change_password",
-                  "old_nt_password_hash_encrypted_with_new_nt_password_hash" ]
+        tests = ["os_get_random;eap_mschapv2_change_password",
+                 "generate_nt_response;eap_mschapv2_change_password",
+                 "get_master_key;eap_mschapv2_change_password",
+                 "nt_password_hash;eap_mschapv2_change_password",
+                 "old_nt_password_hash_encrypted_with_new_nt_password_hash"]
         for func in tests:
             with fail_test(dev[0], 1, func):
                 dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6051,9 +7199,9 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
                 dev[0].request("REMOVE_NETWORK all")
                 dev[0].wait_disconnected(timeout=1)
 
-        tests = [ "encrypt_pw_block_with_password_hash;eap_mschapv2_change_password",
-                  "nt_password_hash;eap_mschapv2_change_password",
-                  "nt_password_hash;eap_mschapv2_success" ]
+        tests = ["encrypt_pw_block_with_password_hash;eap_mschapv2_change_password",
+                 "nt_password_hash;eap_mschapv2_change_password",
+                 "nt_password_hash;eap_mschapv2_success"]
         for func in tests:
             with fail_test(dev[0], 1, func):
                 dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6070,7 +7218,7 @@ def test_eap_proto_mschapv2_errors(dev, apdev):
                 dev[0].request("REMOVE_NETWORK all")
                 dev[0].wait_disconnected(timeout=1)
 
-        tests = [ "eap_msg_alloc;eap_mschapv2_change_password" ]
+        tests = ["eap_msg_alloc;eap_mschapv2_change_password"]
         for func in tests:
             with alloc_fail(dev[0], 1, func):
                 dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6097,7 +7245,7 @@ def test_eap_proto_pwd(dev, apdev):
     eap_proto_pwd_test_wait = False
 
     def pwd_handler(ctx, req):
-        logger.info("pwd_handler - RX " + req.encode("hex"))
+        logger.info("pwd_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -6112,12 +7260,14 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Missing payload")
+            # EAP-pwd: Got a frame but pos is not NULL and len is 0
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'], 4 + 1,
                                EAP_TYPE_PWD)
 
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Missing Total-Length field")
+            # EAP-pwd: Frame too short to contain Total-Length field
             payload = struct.pack("B", 0x80)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6125,6 +7275,7 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Too large Total-Length")
+            # EAP-pwd: Incoming fragments whose total length = 65535
             payload = struct.pack(">BH", 0x80, 65535)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6133,12 +7284,16 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: First fragment")
+            # EAP-pwd: Incoming fragments whose total length = 10
+            # EAP-pwd: ACKing a 0 byte fragment
             payload = struct.pack(">BH", 0xc0, 10)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unexpected Total-Length value in the second fragment")
+            # EAP-pwd: Incoming fragments whose total length = 0
+            # EAP-pwd: Unexpected new fragment start when previous fragment is still in use
             payload = struct.pack(">BH", 0x80, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6146,6 +7301,9 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: First and only fragment")
+            # EAP-pwd: Incoming fragments whose total length = 0
+            # EAP-pwd: processing frame: exch 0, len 0
+            # EAP-pwd: Ignoring message with unknown opcode 128
             payload = struct.pack(">BH", 0x80, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6153,6 +7311,9 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: First and only fragment with extra data")
+            # EAP-pwd: Incoming fragments whose total length = 0
+            # EAP-pwd: processing frame: exch 0, len 1
+            # EAP-pwd: Ignoring message with unknown opcode 128
             payload = struct.pack(">BHB", 0x80, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6161,12 +7322,15 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: First fragment")
+            # EAP-pwd: Incoming fragments whose total length = 2
+            # EAP-pwd: ACKing a 1 byte fragment
             payload = struct.pack(">BHB", 0xc0, 2, 1)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Extra data in the second fragment")
+            # EAP-pwd: Buffer overflow attack detected (3 vs. 1)!
             payload = struct.pack(">BBB", 0x0, 2, 3)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6174,6 +7338,8 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Too short id exchange")
+            # EAP-pwd: processing frame: exch 1, len 0
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">B", 0x01)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6181,6 +7347,8 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unsupported rand func in id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=0 random=0 prf=0 prep=0
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">BHBBLB", 0x01, 0, 0, 0, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6188,6 +7356,8 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unsupported prf in id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=0 prep=0
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 0, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6195,6 +7365,9 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unsupported password pre-processing technique in id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=255
+            # EAP-PWD: Unsupported password pre-processing technique (Prep=255)
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 255)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6203,12 +7376,15 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=0
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unexpected id exchange")
+            # EAP-pwd: processing frame: exch 1, len 9
+            # EAP-PWD: PWD-Commit-Req -> FAILURE
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6216,6 +7392,8 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unexpected commit exchange")
+            # EAP-pwd: processing frame: exch 2, len 0
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">B", 0x02)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6224,12 +7402,15 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=0
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Test: Unexpected Commit payload length")
+            logger.info("Test: Unexpected Commit payload length (prep=None)")
+            # EAP-pwd commit request, password prep is NONE
+            # EAP-pwd: Unexpected Commit payload length 0 (expected 96)
             payload = struct.pack(">B", 0x02)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6238,13 +7419,15 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=0
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Commit payload with all zeros values --> Shared key at infinity")
-            payload = struct.pack(">B", 0x02) + 96*'\0'
+            # EAP-pwd: Invalid coordinate in element
+            payload = struct.pack(">B", 0x02) + 96*b'\0'
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
 
@@ -6252,6 +7435,7 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=0
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6259,6 +7443,7 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Commit payload with valid values")
+            # EAP-pwd commit request, password prep is NONE
             element = binascii.unhexlify("8dcab2862c5396839a6bac0c689ff03d962863108e7c275bbf1d6eedf634ee832a214db99f0d0a1a6317733eecdd97f0fc4cda19f57e1bb9bb9c8dcf8c60ba6f")
             scalar = binascii.unhexlify("450f31e058cf2ac2636a5d6e2b3c70b1fcc301957f0716e77f13aa69f9a2e5bd")
             payload = struct.pack(">B", 0x02) + element + scalar
@@ -6267,6 +7452,7 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unexpected Confirm payload length 0")
+            # EAP-pwd: Unexpected Confirm payload length 0 (expected 32)
             payload = struct.pack(">B", 0x03)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6275,6 +7461,7 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=0
             payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
@@ -6282,6 +7469,7 @@ def test_eap_proto_pwd(dev, apdev):
         if ctx['num'] == idx:
             eap_proto_pwd_test_wait = True
             logger.info("Test: Commit payload with valid values")
+            # EAP-pwd commit request, password prep is NONE
             element = binascii.unhexlify("8dcab2862c5396839a6bac0c689ff03d962863108e7c275bbf1d6eedf634ee832a214db99f0d0a1a6317733eecdd97f0fc4cda19f57e1bb9bb9c8dcf8c60ba6f")
             scalar = binascii.unhexlify("450f31e058cf2ac2636a5d6e2b3c70b1fcc301957f0716e77f13aa69f9a2e5bd")
             payload = struct.pack(">B", 0x02) + element + scalar
@@ -6290,14 +7478,197 @@ def test_eap_proto_pwd(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Confirm payload with incorrect value")
-            payload = struct.pack(">B", 0x03) + 32*'\0'
+            # EAP-PWD (peer): confirm did not verify
+            payload = struct.pack(">B", 0x03) + 32*b'\0'
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
 
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Unexpected confirm exchange")
+            # EAP-pwd: processing frame: exch 3, len 0
+            # EAP-PWD: PWD-ID-Req -> FAILURE
             payload = struct.pack(">B", 0x03)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unsupported password pre-processing technique SASLprep in id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=2
+            # EAP-PWD: Unsupported password pre-processing technique (Prep=2)
+            # EAP-PWD: PWD-ID-Req -> FAILURE
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 2)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=1
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 1)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=MS)")
+            # EAP-pwd commit request, password prep is MS
+            # EAP-pwd: Unexpected Commit payload length 0 (expected 96)
+            payload = struct.pack(">B", 0x02)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=3
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 3)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha1)")
+            # EAP-pwd commit request, password prep is salted sha1
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">B", 0x02)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=3
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 3)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha1)")
+            # EAP-pwd commit request, password prep is salted sha1
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">BB", 0x02, 0)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=3
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 3)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha1)")
+            # EAP-pwd commit request, password prep is salted sha1
+            # EAP-pwd: Unexpected Commit payload length 1 (expected 98)
+            payload = struct.pack(">BB", 0x02, 1)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=4
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 4)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha256)")
+            # EAP-pwd commit request, password prep is salted sha256
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">B", 0x02)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=4
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 4)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha256)")
+            # EAP-pwd commit request, password prep is salted sha256
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">BB", 0x02, 0)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=4
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 4)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha256)")
+            # EAP-pwd commit request, password prep is salted sha256
+            # EAP-pwd: Unexpected Commit payload length 1 (expected 98)
+            payload = struct.pack(">BB", 0x02, 1)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=5
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 5)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha512)")
+            # EAP-pwd commit request, password prep is salted sha512
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">B", 0x02)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=5
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 5)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha512)")
+            # EAP-pwd commit request, password prep is salted sha512
+            # EAP-pwd: Invalid Salt-len
+            payload = struct.pack(">BB", 0x02, 0)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        idx += 1
+        if ctx['num'] == idx:
+            eap_proto_pwd_test_wait = True
+            logger.info("Test: Valid id exchange")
+            # EAP-PWD: Server EAP-pwd-ID proposal: group=19 random=1 prf=1 prep=5
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 5)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Unexpected Commit payload length (prep=ssha512)")
+            # EAP-pwd commit request, password prep is salted sha512
+            # EAP-pwd: Unexpected Commit payload length 1 (expected 98)
+            payload = struct.pack(">BB", 0x02, 1)
             return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + len(payload), EAP_TYPE_PWD) + payload
 
@@ -6310,6 +7681,7 @@ def test_eap_proto_pwd(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_pwd_test_done:
@@ -6335,21 +7707,300 @@ def test_eap_proto_pwd(dev, apdev):
             if not ok:
                 raise Exception("Expected EAP event not seen")
             if eap_proto_pwd_test_wait:
-                for k in range(10):
+                for k in range(20):
                     time.sleep(0.1)
                     if not eap_proto_pwd_test_wait:
                         break
+                if eap_proto_pwd_test_wait:
+                    raise Exception("eap_proto_pwd_test_wait not cleared")
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected(timeout=1)
             dev[0].dump_monitor()
     finally:
         stop_radius_server(srv)
 
+def test_eap_proto_pwd_invalid_scalar(dev, apdev):
+    """EAP-pwd protocol tests - invalid server scalar"""
+    check_eap_capa(dev[0], "PWD")
+    run_eap_proto_pwd_invalid_scalar(dev, apdev, 32*b'\0')
+    run_eap_proto_pwd_invalid_scalar(dev, apdev, 31*b'\0' + b'\x01')
+    # Group Order
+    val = binascii.unhexlify("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551")
+    run_eap_proto_pwd_invalid_scalar(dev, apdev, val)
+    # Group Order - 1
+    val = binascii.unhexlify("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550")
+    run_eap_proto_pwd_invalid_scalar(dev, apdev, val, valid_scalar=True)
+
+def run_eap_proto_pwd_invalid_scalar(dev, apdev, scalar, valid_scalar=False):
+    global eap_proto_pwd_invalid_scalar_fail
+    eap_proto_pwd_invalid_scalar_fail = False
+
+    def pwd_handler(ctx, req):
+        logger.info("pwd_handler - RX " + binascii.hexlify(req).decode())
+        if 'num' not in ctx:
+            ctx['num'] = 0
+        ctx['num'] = ctx['num'] + 1
+        if 'id' not in ctx:
+            ctx['id'] = 1
+        ctx['id'] = (ctx['id'] + 1) % 256
+        idx = 0
+
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Valid id exchange")
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Commit payload with invalid scalar")
+            payload = struct.pack(">B", 0x02) + binascii.unhexlify("67feb2b46d59e6dd3af3a429ec9c04a949337564615d3a2c19bdf6826eb6f5efa303aed86af3a072ed819d518d620adb2659f0e84c4f8b739629db8c93088cfc") + scalar
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Confirm message next - should not get here")
+            global eap_proto_pwd_invalid_scalar_fail
+            eap_proto_pwd_invalid_scalar_fail = True
+            payload = struct.pack(">B", 0x03) + 32*b'\0'
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        logger.info("No more test responses available - test case completed")
+        return struct.pack(">BBH", EAP_CODE_FAILURE, ctx['id'], 4)
+
+    srv = start_radius_server(pwd_handler)
+
+    try:
+        hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+        dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
+                       eap="PWD", identity="pwd user",
+                       password="secret password",
+                       wait_connect=False)
+        ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=5)
+        if ev is None:
+            raise Exception("EAP failure not reported")
+        dev[0].request("REMOVE_NETWORK all")
+        dev[0].wait_disconnected(timeout=1)
+        dev[0].dump_monitor()
+    finally:
+        stop_radius_server(srv)
+
+    if valid_scalar and not eap_proto_pwd_invalid_scalar_fail:
+        raise Exception("Peer did not accept valid EAP-pwd-Commit scalar")
+    if not valid_scalar and eap_proto_pwd_invalid_scalar_fail:
+        raise Exception("Peer did not stop after invalid EAP-pwd-Commit scalar")
+
+def test_eap_proto_pwd_invalid_element(dev, apdev):
+    """EAP-pwd protocol tests - invalid server element"""
+    check_eap_capa(dev[0], "PWD")
+    # Invalid x,y coordinates
+    run_eap_proto_pwd_invalid_element(dev, apdev, 64*b'\x00')
+    run_eap_proto_pwd_invalid_element(dev, apdev, 32*b'\x00' + 32*b'\x01')
+    run_eap_proto_pwd_invalid_element(dev, apdev, 32*b'\x01' + 32*b'\x00')
+    run_eap_proto_pwd_invalid_element(dev, apdev, 32*b'\xff' + 32*b'\x01')
+    run_eap_proto_pwd_invalid_element(dev, apdev, 32*b'\x01' + 32*b'\xff')
+    run_eap_proto_pwd_invalid_element(dev, apdev, 64*b'\xff')
+    # Not on curve
+    run_eap_proto_pwd_invalid_element(dev, apdev, 64*b'\x01')
+
+def run_eap_proto_pwd_invalid_element(dev, apdev, element):
+    global eap_proto_pwd_invalid_element_fail
+    eap_proto_pwd_invalid_element_fail = False
+
+    def pwd_handler(ctx, req):
+        logger.info("pwd_handler - RX " + binascii.hexlify(req).decode())
+        if 'num' not in ctx:
+            ctx['num'] = 0
+        ctx['num'] = ctx['num'] + 1
+        if 'id' not in ctx:
+            ctx['id'] = 1
+        ctx['id'] = (ctx['id'] + 1) % 256
+        idx = 0
+
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Valid id exchange")
+            payload = struct.pack(">BHBBLB", 0x01, 19, 1, 1, 0, 0)
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Test: Commit payload with invalid element")
+            payload = struct.pack(">B", 0x02) + element + 31*b'\0' + b'\x02'
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+        idx += 1
+        if ctx['num'] == idx:
+            logger.info("Confirm message next - should not get here")
+            global eap_proto_pwd_invalid_element_fail
+            eap_proto_pwd_invalid_element_fail = True
+            payload = struct.pack(">B", 0x03) + 32*b'\0'
+            return struct.pack(">BBHB", EAP_CODE_REQUEST, ctx['id'],
+                               4 + 1 + len(payload), EAP_TYPE_PWD) + payload
+
+        logger.info("No more test responses available - test case completed")
+        return struct.pack(">BBH", EAP_CODE_FAILURE, ctx['id'], 4)
+
+    srv = start_radius_server(pwd_handler)
+
+    try:
+        hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+        dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
+                       eap="PWD", identity="pwd user",
+                       password="secret password",
+                       wait_connect=False)
+        ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=5)
+        if ev is None:
+            raise Exception("EAP failure not reported")
+        dev[0].request("REMOVE_NETWORK all")
+        dev[0].wait_disconnected(timeout=1)
+        dev[0].dump_monitor()
+    finally:
+        stop_radius_server(srv)
+
+    if eap_proto_pwd_invalid_element_fail:
+        raise Exception("Peer did not stop after invalid EAP-pwd-Commit element")
+
+def rx_msg(src):
+    ev = src.wait_event(["EAPOL-TX"], timeout=5)
+    if ev is None:
+        raise Exception("No EAPOL-TX")
+    return ev.split(' ')[2]
+
+def tx_msg(src, dst, msg):
+    dst.request("EAPOL_RX " + src.own_addr() + " " + msg)
+
+def proxy_msg(src, dst):
+    msg = rx_msg(src)
+    tx_msg(src, dst, msg)
+    return msg
+
+def start_pwd_exchange(dev, ap):
+    check_eap_capa(dev, "PWD")
+    params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
+    hapd = hostapd.add_ap(ap, params)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev.request("SET ext_eapol_frame_io 1")
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                   eap="PWD", identity="pwd user", password="secret password",
+                   wait_connect=False, scan_freq="2412")
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # EAP-pwd-ID/Request
+    proxy_msg(dev, hapd) # EAP-pwd-ID/Response
+    return hapd
+
+def test_eap_proto_pwd_unexpected_fragment(dev, apdev):
+    """EAP-pwd protocol tests - unexpected more-fragment frame"""
+    hapd = start_pwd_exchange(dev[0], apdev[0])
+
+    # EAP-pwd-Commit/Request
+    req = rx_msg(hapd)
+    if req[18:20] != "02":
+        raise Exception("Unexpected EAP-pwd-Commit/Request flag")
+    msg = req[0:18] + "42" + req[20:]
+    tx_msg(hapd, dev[0], msg)
+
+def test_eap_proto_pwd_reflection_attack(dev, apdev):
+    """EAP-pwd protocol tests - reflection attack on the server"""
+    hapd = start_pwd_exchange(dev[0], apdev[0])
+
+    # EAP-pwd-Commit/Request
+    req = proxy_msg(hapd, dev[0])
+    if len(req) != 212:
+        raise Exception("Unexpected EAP-pwd-Commit/Response length")
+
+    # EAP-pwd-Commit/Response
+    resp = rx_msg(dev[0])
+    # Reflect same Element/Scalar back to the server
+    msg = resp[0:20] + req[20:]
+    tx_msg(dev[0], hapd, msg)
+
+    # EAP-pwd-Commit/Response or EAP-Failure
+    req = rx_msg(hapd)
+    if req[8:10] != "04":
+        # reflect EAP-pwd-Confirm/Request
+        msg = req[0:8] + "02" + req[10:]
+        tx_msg(dev[0], hapd, msg)
+        req = rx_msg(hapd)
+        if req[8:10] == "03":
+            raise Exception("EAP-Success after reflected Element/Scalar")
+        raise Exception("No EAP-Failure to reject invalid EAP-pwd-Commit/Response")
+
+def test_eap_proto_pwd_invalid_scalar_peer(dev, apdev):
+    """EAP-pwd protocol tests - invalid peer scalar"""
+    run_eap_proto_pwd_invalid_scalar_peer(dev, apdev, 32*"00")
+    run_eap_proto_pwd_invalid_scalar_peer(dev, apdev, 31*"00" + "01")
+    # Group Order
+    run_eap_proto_pwd_invalid_scalar_peer(dev, apdev,
+                                          "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551")
+    # Group Order - 1
+    run_eap_proto_pwd_invalid_scalar_peer(dev, apdev,
+                                          "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550",
+                                          valid_scalar=True)
+
+def run_eap_proto_pwd_invalid_scalar_peer(dev, apdev, scalar,
+                                          valid_scalar=False):
+    hapd = start_pwd_exchange(dev[0], apdev[0])
+    proxy_msg(hapd, dev[0]) # EAP-pwd-Commit/Request
+
+    # EAP-pwd-Commit/Response
+    resp = rx_msg(dev[0])
+    # Replace scalar with an invalid value
+    msg = resp[0:20] + resp[20:148] + scalar
+    tx_msg(dev[0], hapd, msg)
+
+    # EAP-pwd-Commit/Response or EAP-Failure
+    req = rx_msg(hapd)
+    if valid_scalar and req[8:10] == "04":
+        raise Exception("Unexpected EAP-Failure with valid scalar")
+    if not valid_scalar and req[8:10] != "04":
+        raise Exception("No EAP-Failure to reject invalid scalar")
+    dev[0].request("REMOVE_NETWORK all")
+    dev[0].wait_disconnected(timeout=1)
+    hapd.disable()
+
+def test_eap_proto_pwd_invalid_element_peer(dev, apdev):
+    """EAP-pwd protocol tests - invalid peer element"""
+    # Invalid x,y coordinates
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 64*'00')
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 32*'00' + 32*'01')
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 32*'01' + 32*'00')
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 32*'ff' + 32*'01')
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 32*'01' + 32*'ff')
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 64*'ff')
+    # Not on curve
+    run_eap_proto_pwd_invalid_element_peer(dev, apdev, 64*'01')
+
+def run_eap_proto_pwd_invalid_element_peer(dev, apdev, element):
+    hapd = start_pwd_exchange(dev[0], apdev[0])
+    proxy_msg(hapd, dev[0]) # EAP-pwd-Commit/Request
+
+    # EAP-pwd-Commit/Response
+    resp = rx_msg(dev[0])
+    # Replace element with an invalid value
+    msg = resp[0:20] + element + resp[148:]
+    tx_msg(dev[0], hapd, msg)
+
+    # EAP-pwd-Commit/Response or EAP-Failure
+    req = rx_msg(hapd)
+    if req[8:10] != "04":
+        raise Exception("No EAP-Failure to reject invalid element")
+    dev[0].request("REMOVE_NETWORK all")
+    dev[0].wait_disconnected(timeout=1)
+    hapd.disable()
+
 def test_eap_proto_pwd_errors(dev, apdev):
     """EAP-pwd local error cases"""
     check_eap_capa(dev[0], "PWD")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 4):
         with alloc_fail(dev[0], i, "eap_pwd_init"):
@@ -6372,7 +8023,9 @@ def test_eap_proto_pwd_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].wait_disconnected()
 
-    funcs = [ "eap_pwd_getkey", "eap_pwd_get_emsk" ]
+    funcs = ["eap_pwd_getkey", "eap_pwd_get_emsk",
+             "=wpabuf_alloc;eap_pwd_perform_commit_exchange",
+             "=wpabuf_alloc;eap_pwd_perform_confirm_exchange"]
     for func in funcs:
         with alloc_fail(dev[0], 1, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6486,23 +8139,46 @@ def test_eap_proto_pwd_errors(dev, apdev):
     dev[0].request("REMOVE_NETWORK all")
     dev[0].wait_disconnected()
 
-    with fail_test(dev[0], 1,
-                   "hash_nt_password_hash;eap_pwd_perform_commit_exchange"):
-        dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
-                       eap="PWD", identity="pwd-hash",
-                       password_hex="hash:e3718ece8ab74792cbbfffd316d2d19a",
-                       wait_connect=False)
-        ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=10)
-        if ev is None:
-            raise Exception("No EAP-Failure reported")
-        dev[0].request("REMOVE_NETWORK all")
-        dev[0].wait_disconnected()
+    funcs = [(1, "hash_nt_password_hash;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_bignum_init;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_ec_point_init;eap_pwd_perform_commit_exchange"),
+             (2, "=crypto_ec_point_init;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_ec_point_mul;eap_pwd_perform_commit_exchange"),
+             (2, "=crypto_ec_point_mul;eap_pwd_perform_commit_exchange"),
+             (3, "=crypto_ec_point_mul;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_ec_point_add;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_ec_point_invert;eap_pwd_perform_commit_exchange"),
+             (1, "=crypto_ec_point_to_bin;eap_pwd_perform_commit_exchange"),
+             (1, "crypto_hash_finish;eap_pwd_kdf"),
+             (1, "crypto_ec_point_from_bin;eap_pwd_get_element"),
+             (3, "crypto_bignum_init;compute_password_element"),
+             (4, "crypto_bignum_init;compute_password_element"),
+             (1, "crypto_bignum_init_set;compute_password_element"),
+             (2, "crypto_bignum_init_set;compute_password_element"),
+             (3, "crypto_bignum_init_set;compute_password_element"),
+             (1, "crypto_bignum_to_bin;compute_password_element"),
+             (1, "crypto_ec_point_compute_y_sqr;compute_password_element"),
+             (1, "crypto_ec_point_solve_y_coord;compute_password_element"),
+             (1, "crypto_bignum_rand;compute_password_element"),
+             (1, "crypto_bignum_sub;compute_password_element")]
+    for count, func in funcs:
+        with fail_test(dev[0], count, func):
+            dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
+                           eap="PWD", identity="pwd-hash",
+                           password_hex="hash:e3718ece8ab74792cbbfffd316d2d19a",
+                           wait_connect=False)
+            ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=10)
+            if ev is None:
+                raise Exception("No EAP-Failure reported")
+            dev[0].request("REMOVE_NETWORK all")
+            dev[0].wait_disconnected()
 
-    params = { "ssid": "eap-test2", "wpa": "2", "wpa_key_mgmt": "WPA-EAP",
-               "rsn_pairwise": "CCMP", "ieee8021x": "1",
-               "eap_server": "1", "eap_user_file": "auth_serv/eap_user.conf",
-               "pwd_group": "19", "fragment_size": "40" }
-    hostapd.add_ap(apdev[1], params)
+    params = {"ssid": "eap-test2", "wpa": "2", "wpa_key_mgmt": "WPA-EAP",
+              "rsn_pairwise": "CCMP", "ieee8021x": "1",
+              "eap_server": "1", "eap_user_file": "auth_serv/eap_user.conf",
+              "pwd_group": "19", "fragment_size": "40"}
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    dev[0].scan_for_bss(hapd2.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1, "wpabuf_alloc;=eap_pwd_process"):
         dev[0].connect("eap-test2", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6527,6 +8203,237 @@ def test_eap_proto_pwd_errors(dev, apdev):
             dev[0].wait_disconnected()
             dev[0].dump_monitor()
 
+def run_eap_pwd_connect(dev, hash=True, fragment=2000):
+    if hash:
+        dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                    fragment_size=str(fragment),
+                    eap="PWD", identity="pwd-hash",
+                    password_hex="hash:e3718ece8ab74792cbbfffd316d2d19a",
+                    scan_freq="2412", wait_connect=False)
+    else:
+        dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                    fragment_size=str(fragment),
+                    eap="PWD", identity="pwd-hash-sha1",
+                    password="secret password",
+                    scan_freq="2412", wait_connect=False)
+    ev = dev.wait_event(["CTRL-EVENT-EAP-SUCCESS", "CTRL-EVENT-EAP-FAILURE",
+                         "CTRL-EVENT-DISCONNECTED"],
+                        timeout=1)
+    dev.request("REMOVE_NETWORK all")
+    if not ev or "CTRL-EVENT-DISCONNECTED" not in ev:
+        dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_eap_proto_pwd_errors_server(dev, apdev):
+    """EAP-pwd local error cases on server"""
+    check_eap_capa(dev[0], "PWD")
+    params = int_eap_server_params()
+    params['erp_domain'] = 'example.com'
+    params['eap_server_erp'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "eap_pwd_init"),
+             (2, "eap_pwd_init"),
+             (3, "eap_pwd_init"),
+             (1, "eap_pwd_build_id_req"),
+             (1, "eap_pwd_build_commit_req"),
+             (1, "eap_pwd_build_confirm_req"),
+             (1, "eap_pwd_h_init;eap_pwd_build_confirm_req"),
+             (1, "wpabuf_alloc;eap_pwd_build_confirm_req"),
+             (1, "eap_msg_alloc;eap_pwd_build_req"),
+             (1, "eap_pwd_process_id_resp"),
+             (1, "get_eap_pwd_group;eap_pwd_process_id_resp"),
+             (1, "eap_pwd_process_confirm_resp"),
+             (1, "eap_pwd_h_init;eap_pwd_process_confirm_resp"),
+             (1, "compute_keys;eap_pwd_process_confirm_resp"),
+             (1, "eap_pwd_getkey"),
+             (1, "eap_pwd_get_emsk"),
+             (1, "eap_pwd_get_session_id")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_pwd_connect(dev[0], hash=True)
+
+    tests = [(1, "eap_msg_alloc;eap_pwd_build_req"),
+             (2, "eap_msg_alloc;eap_pwd_build_req"),
+             (1, "wpabuf_alloc;eap_pwd_process")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_pwd_connect(dev[0], hash=True, fragment=13)
+
+    tests = [(4, "eap_pwd_init")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            run_eap_pwd_connect(dev[0], hash=False)
+
+    tests = [(1, "eap_pwd_build_id_req"),
+             (1, "eap_pwd_build_commit_req"),
+             (1, "crypto_ec_point_mul;eap_pwd_build_commit_req"),
+             (1, "crypto_ec_point_invert;eap_pwd_build_commit_req"),
+             (1, "crypto_ec_point_to_bin;eap_pwd_build_commit_req"),
+             (1, "crypto_ec_point_to_bin;eap_pwd_build_confirm_req"),
+             (2, "=crypto_ec_point_to_bin;eap_pwd_build_confirm_req"),
+             (1, "hash_nt_password_hash;eap_pwd_process_id_resp"),
+             (1, "compute_password_element;eap_pwd_process_id_resp"),
+             (1, "crypto_bignum_init;eap_pwd_process_commit_resp"),
+             (1, "crypto_ec_point_mul;eap_pwd_process_commit_resp"),
+             (2, "crypto_ec_point_mul;eap_pwd_process_commit_resp"),
+             (1, "crypto_ec_point_add;eap_pwd_process_commit_resp"),
+             (1, "crypto_ec_point_to_bin;eap_pwd_process_confirm_resp"),
+             (2, "=crypto_ec_point_to_bin;eap_pwd_process_confirm_resp")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            run_eap_pwd_connect(dev[0], hash=True)
+
+def start_pwd_assoc(dev, hapd):
+    dev.connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                eap="PWD", identity="pwd user", password="secret password",
+                wait_connect=False, scan_freq="2412")
+    proxy_msg(hapd, dev) # EAP-Identity/Request
+    proxy_msg(dev, hapd) # EAP-Identity/Response
+    proxy_msg(hapd, dev) # EAP-pwd-Identity/Request
+
+def stop_pwd_assoc(dev, hapd):
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+    hapd.dump_monitor()
+
+def test_eap_proto_pwd_server(dev, apdev):
+    """EAP-pwd protocol testing for the server"""
+    check_eap_capa(dev[0], "PWD")
+    params = int_eap_server_params()
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+    hapd.request("SET ext_eapol_frame_io 1")
+    dev[0].request("SET ext_eapol_frame_io 1")
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Replace exch field with unexpected value
+    # --> EAP-pwd: Unexpected opcode=4 in state=0
+    msg = resp[0:18] + "04" + resp[20:]
+    tx_msg(dev[0], hapd, msg)
+
+    # Too short EAP-pwd header (no flags/exch field)
+    # --> EAP-pwd: Invalid frame
+    msg = resp[0:4] + "0005" + resp[8:12] + "0005" + "34"
+    tx_msg(dev[0], hapd, msg)
+
+    # Too short EAP-pwd header (L=1 but only one octet of total length field)
+    # --> EAP-pwd: Frame too short to contain Total-Length field
+    msg = resp[0:4] + "0007" + resp[8:12] + "0007" + "34" + "81ff"
+    tx_msg(dev[0], hapd, msg)
+    # server continues exchange, so start from scratch for the next step
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too large total length
+    msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "34" + "c1ffff"
+    tx_msg(dev[0], hapd, msg)
+    # server continues exchange, so start from scratch for the next step
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # First fragment
+    msg = resp[0:4] + "0009" + resp[8:12] + "0009" + "34" + "c100ff" + "aa"
+    tx_msg(dev[0], hapd, msg)
+    # Ack
+    req = rx_msg(hapd)
+    # Unexpected first fragment
+    # --> EAP-pwd: Unexpected new fragment start when previous fragment is still in use
+    msg = resp[0:4] + "0009" + resp[8:10] + req[10:12] + "0009" + "34" + "c100ee" + "bb"
+    tx_msg(dev[0], hapd, msg)
+    # server continues exchange, so start from scratch for the next step
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too much data in first fragment
+    # --> EAP-pwd: Buffer overflow attack detected! (0+2 > 1)
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "34" + "c10001" + "aabb"
+    tx_msg(dev[0], hapd, msg)
+    # EAP-Failure
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Change parameters
+    # --> EAP-pwd: peer changed parameters
+    msg = resp[0:20] + "ff" + resp[22:]
+    tx_msg(dev[0], hapd, msg)
+    # EAP-Failure
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Too short ID response
+    # --> EAP-pwd: Invalid ID response
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "34" + "01ffeeddcc"
+    tx_msg(dev[0], hapd, msg)
+    # server continues exchange, so start from scratch for the next step
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    # EAP-pwd-Identity/Response
+    resp = rx_msg(dev[0])
+    tx_msg(dev[0], hapd, resp)
+    # EAP-pwd-Commit/Request
+    req = rx_msg(hapd)
+    # Unexpected EAP-pwd-Identity/Response
+    # --> EAP-pwd: Unexpected opcode=1 in state=1
+    msg = resp[0:10] + req[10:12] + resp[12:]
+    tx_msg(dev[0], hapd, msg)
+    # server continues exchange, so start from scratch for the next step
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # EAP-pwd-Identity/Response
+    proxy_msg(hapd, dev[0]) # EAP-pwd-Commit/Request
+    # EAP-pwd-Commit/Response
+    resp = rx_msg(dev[0])
+    # Too short Commit response
+    # --> EAP-pwd: Unexpected Commit payload length 4 (expected 96)
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "34" + "02ffeeddcc"
+    tx_msg(dev[0], hapd, msg)
+    # EAP-Failure
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    proxy_msg(dev[0], hapd) # EAP-pwd-Identity/Response
+    proxy_msg(hapd, dev[0]) # EAP-pwd-Commit/Request
+    proxy_msg(dev[0], hapd) # EAP-pwd-Commit/Response
+    proxy_msg(hapd, dev[0]) # EAP-pwd-Confirm/Request
+    # EAP-pwd-Confirm/Response
+    resp = rx_msg(dev[0])
+    # Too short Confirm response
+    # --> EAP-pwd: Unexpected Confirm payload length 4 (expected 32)
+    msg = resp[0:4] + "000a" + resp[8:12] + "000a" + "34" + "03ffeeddcc"
+    tx_msg(dev[0], hapd, msg)
+    # EAP-Failure
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
+    start_pwd_assoc(dev[0], hapd)
+    resp = rx_msg(dev[0])
+    # Set M=1
+    # --> EAP-pwd: No buffer for reassembly
+    msg = resp[0:18] + "41" + resp[20:]
+    tx_msg(dev[0], hapd, msg)
+    # EAP-Failure
+    rx_msg(hapd)
+    stop_pwd_assoc(dev[0], hapd)
+
 def test_eap_proto_erp(dev, apdev):
     """ERP protocol tests"""
     check_erp_capa(dev[0])
@@ -6535,7 +8442,7 @@ def test_eap_proto_erp(dev, apdev):
     eap_proto_erp_test_done = False
 
     def erp_handler(ctx, req):
-        logger.info("erp_handler - RX " + req.encode("hex"))
+        logger.info("erp_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -6564,7 +8471,7 @@ def test_eap_proto_erp(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Zero-length TVs/TLVs")
-            payload = ""
+            payload = b""
             return struct.pack(">BBHBB", EAP_CODE_INITIATE, ctx['id'],
                                4 + 1 + 1 + len(payload),
                                EAP_ERP_TYPE_REAUTH_START, 0) + payload
@@ -6660,6 +8567,7 @@ def test_eap_proto_erp(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_erp_test_done:
@@ -6684,6 +8592,7 @@ def test_eap_proto_fast_errors(dev, apdev):
     check_eap_capa(dev[0], "FAST")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 5):
         with alloc_fail(dev[0], i, "eap_fast_init"):
@@ -6701,16 +8610,16 @@ def test_eap_proto_fast_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "wpabuf_alloc;eap_fast_tlv_eap_payload"),
-              (1, "eap_fast_derive_key;eap_fast_derive_key_auth"),
-              (1, "eap_msg_alloc;eap_peer_tls_phase2_nak"),
-              (1, "wpabuf_alloc;eap_fast_tlv_result"),
-              (1, "wpabuf_alloc;eap_fast_tlv_pac_ack"),
-              (1, "=eap_peer_tls_derive_session_id;eap_fast_process_crypto_binding"),
-              (1, "eap_peer_tls_decrypt;eap_fast_decrypt"),
-              (1, "eap_fast_getKey"),
-              (1, "eap_fast_get_session_id"),
-              (1, "eap_fast_get_emsk") ]
+    tests = [(1, "wpabuf_alloc;eap_fast_tlv_eap_payload"),
+             (1, "eap_fast_derive_key;eap_fast_derive_key_auth"),
+             (1, "eap_msg_alloc;eap_peer_tls_phase2_nak"),
+             (1, "wpabuf_alloc;eap_fast_tlv_result"),
+             (1, "wpabuf_alloc;eap_fast_tlv_pac_ack"),
+             (1, "=eap_peer_tls_derive_session_id;eap_fast_process_crypto_binding"),
+             (1, "eap_peer_tls_decrypt;eap_fast_decrypt"),
+             (1, "eap_fast_getKey"),
+             (1, "eap_fast_get_session_id"),
+             (1, "eap_fast_get_emsk")]
     for count, func in tests:
         dev[0].request("SET blob fast_pac_auth_errors ")
         with alloc_fail(dev[0], count, func):
@@ -6730,14 +8639,14 @@ def test_eap_proto_fast_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "eap_fast_derive_key;eap_fast_derive_key_provisioning"),
-              (1, "eap_mschapv2_getKey;eap_fast_get_phase2_key"),
-              (1, "=eap_fast_use_pac_opaque"),
-              (1, "eap_fast_copy_buf"),
-              (1, "=eap_fast_add_pac"),
-              (1, "=eap_fast_init_pac_data"),
-              (1, "=eap_fast_write_pac"),
-              (2, "=eap_fast_write_pac") ]
+    tests = [(1, "eap_fast_derive_key;eap_fast_derive_key_provisioning"),
+             (1, "eap_mschapv2_getKey;eap_fast_get_phase2_key"),
+             (1, "=eap_fast_use_pac_opaque"),
+             (1, "eap_fast_copy_buf"),
+             (1, "=eap_fast_add_pac"),
+             (1, "=eap_fast_init_pac_data"),
+             (1, "=eap_fast_write_pac"),
+             (2, "=eap_fast_write_pac")]
     for count, func in tests:
         dev[0].request("SET blob fast_pac_errors ")
         with alloc_fail(dev[0], count, func):
@@ -6757,9 +8666,9 @@ def test_eap_proto_fast_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "eap_fast_get_cmk;eap_fast_process_crypto_binding"),
-              (1, "eap_fast_derive_eap_msk;eap_fast_process_crypto_binding"),
-              (1, "eap_fast_derive_eap_emsk;eap_fast_process_crypto_binding") ]
+    tests = [(1, "eap_fast_get_cmk;eap_fast_process_crypto_binding"),
+             (1, "eap_fast_derive_eap_msk;eap_fast_process_crypto_binding"),
+             (1, "eap_fast_derive_eap_emsk;eap_fast_process_crypto_binding")]
     for count, func in tests:
         dev[0].request("SET blob fast_pac_auth_errors ")
         with fail_test(dev[0], count, func):
@@ -6816,21 +8725,21 @@ def test_eap_proto_fast_errors(dev, apdev):
     dev[0].request("REMOVE_NETWORK all")
     dev[0].wait_disconnected()
 
-    tests = [ "FOOBAR\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nFOOBAR\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nSTART\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Type=12345\nEND\n"
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=12\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=1\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=1q\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Opaque=1\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nA-ID=1\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nI-ID=1\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nA-ID-Info=1\nEND\n" ]
+    tests = ["FOOBAR\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nFOOBAR\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nSTART\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Type=12345\nEND\n"
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=12\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=1\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Key=1q\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nPAC-Opaque=1\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nA-ID=1\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nI-ID=1\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nA-ID-Info=1\nEND\n"]
     for pac in tests:
-        blob = binascii.hexlify(pac)
+        blob = binascii.hexlify(pac.encode()).decode()
         dev[0].request("SET blob fast_pac_errors " + blob)
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        eap="FAST", anonymous_identity="FAST",
@@ -6846,10 +8755,10 @@ def test_eap_proto_fast_errors(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].wait_disconnected()
 
-    tests = [ "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nEND\n",
-              "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nEND\nSTART\nEND\nSTART\nEND\n" ]
+    tests = ["wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nEND\n",
+             "wpa_supplicant EAP-FAST PAC file - version 1\nSTART\nEND\nSTART\nEND\nSTART\nEND\n"]
     for pac in tests:
-        blob = binascii.hexlify(pac)
+        blob = binascii.hexlify(pac.encode()).decode()
         dev[0].request("SET blob fast_pac_errors " + blob)
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        eap="FAST", anonymous_identity="FAST",
@@ -6862,12 +8771,38 @@ def test_eap_proto_fast_errors(dev, apdev):
 
     dev[0].request("SET blob fast_pac_errors ")
 
+def test_eap_proto_peap_errors_server(dev, apdev):
+    """EAP-PEAP local error cases on server"""
+    params = int_eap_server_params()
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
+
+    tests = [(1, "get_asymetric_start_key;eap_mschapv2_getKey"),
+             (1, "generate_authenticator_response_pwhash;eap_mschapv2_process_response"),
+             (1, "hash_nt_password_hash;eap_mschapv2_process_response"),
+             (1, "get_master_key;eap_mschapv2_process_response")]
+    for count, func in tests:
+        with fail_test(hapd, count, func):
+            dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP",
+                           scan_freq="2412",
+                           eap="PEAP", anonymous_identity="peap",
+                           identity="user", password="password",
+                           phase1="peapver=0 crypto_binding=2",
+                           ca_cert="auth_serv/ca.pem", phase2="auth=MSCHAPV2",
+                           erp="1", wait_connect=False)
+            ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=10)
+            if ev is None:
+                raise Exception("EAP-Failure not reported")
+            dev[0].request("REMOVE_NETWORK all")
+            dev[0].wait_disconnected()
+
 def test_eap_proto_peap_errors(dev, apdev):
     """EAP-PEAP local error cases"""
     check_eap_capa(dev[0], "PEAP")
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 5):
         with alloc_fail(dev[0], i, "eap_peap_init"):
@@ -6883,17 +8818,17 @@ def test_eap_proto_peap_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "eap_mschapv2_getKey;eap_peap_get_isk;eap_peap_derive_cmk"),
-              (1, "eap_msg_alloc;eap_tlv_build_result"),
-              (1, "eap_mschapv2_init;eap_peap_phase2_request"),
-              (1, "eap_peer_tls_decrypt;eap_peap_decrypt"),
-              (1, "wpabuf_alloc;=eap_peap_decrypt"),
-              (1, "eap_peer_tls_encrypt;eap_peap_decrypt"),
-              (1, "eap_peer_tls_process_helper;eap_peap_process"),
-              (1, "eap_peer_tls_derive_key;eap_peap_process"),
-              (1, "eap_peer_tls_derive_session_id;eap_peap_process"),
-              (1, "eap_peap_getKey"),
-              (1, "eap_peap_get_session_id") ]
+    tests = [(1, "eap_mschapv2_getKey;eap_peap_get_isk;eap_peap_derive_cmk"),
+             (1, "eap_msg_alloc;eap_tlv_build_result"),
+             (1, "eap_mschapv2_init;eap_peap_phase2_request"),
+             (1, "eap_peer_tls_decrypt;eap_peap_decrypt"),
+             (1, "wpabuf_alloc;=eap_peap_decrypt"),
+             (1, "eap_peer_tls_encrypt;eap_peap_decrypt"),
+             (1, "eap_peer_tls_process_helper;eap_peap_process"),
+             (1, "eap_peer_tls_derive_key;eap_peap_process"),
+             (1, "eap_peer_tls_derive_session_id;eap_peap_process"),
+             (1, "eap_peap_getKey"),
+             (1, "eap_peap_get_session_id")]
     for count, func in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6910,9 +8845,10 @@ def test_eap_proto_peap_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "peap_prfplus;eap_peap_derive_cmk"),
-              (1, "eap_tlv_add_cryptobinding;eap_tlv_build_result"),
-              (1, "peap_prfplus;eap_peap_getKey") ]
+    tests = [(1, "peap_prfplus;eap_peap_derive_cmk"),
+             (1, "eap_tlv_add_cryptobinding;eap_tlv_build_result"),
+             (1, "peap_prfplus;eap_peap_getKey"),
+             (1, "get_asymetric_start_key;eap_mschapv2_getKey")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -6946,6 +8882,7 @@ def test_eap_proto_ttls_errors(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     for i in range(1, 5):
         with alloc_fail(dev[0], i, "eap_ttls_init"):
@@ -6962,56 +8899,61 @@ def test_eap_proto_ttls_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "eap_peer_tls_derive_key;eap_ttls_v0_derive_key",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_peer_tls_derive_session_id;eap_ttls_v0_derive_key",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "wpabuf_alloc;eap_ttls_phase2_request_mschapv2",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_mschapv2",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_peer_tls_encrypt;eap_ttls_encrypt_response;eap_ttls_implicit_identity_request",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_peer_tls_decrypt;eap_ttls_decrypt",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_ttls_getKey",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_ttls_get_session_id",
-               "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
-              (1, "eap_ttls_get_emsk",
-               "mschapv2 user@domain", "auth=MSCHAPV2"),
-              (1, "wpabuf_alloc;eap_ttls_phase2_request_mschap",
-               "mschap user", "auth=MSCHAP"),
-              (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_mschap",
-               "mschap user", "auth=MSCHAP"),
-              (1, "wpabuf_alloc;eap_ttls_phase2_request_chap",
-               "chap user", "auth=CHAP"),
-              (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_chap",
-               "chap user", "auth=CHAP"),
-              (1, "wpabuf_alloc;eap_ttls_phase2_request_pap",
-               "pap user", "auth=PAP"),
-              (1, "wpabuf_alloc;eap_ttls_avp_encapsulate",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_mschapv2_init;eap_ttls_phase2_request_eap_method",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_sm_buildIdentity;eap_ttls_phase2_request_eap",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_ttls_avp_encapsulate;eap_ttls_phase2_request_eap",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_ttls_parse_attr_eap",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_peer_tls_encrypt;eap_ttls_encrypt_response;eap_ttls_process_decrypted",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_ttls_fake_identity_request",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_msg_alloc;eap_tls_process_output",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_msg_alloc;eap_peer_tls_build_ack",
-               "user", "autheap=MSCHAPV2"),
-              (1, "tls_connection_decrypt;eap_peer_tls_decrypt",
-               "user", "autheap=MSCHAPV2"),
-              (1, "eap_peer_tls_phase2_nak;eap_ttls_phase2_request_eap_method",
-               "cert user", "autheap=MSCHAPV2") ]
+    tests = [(1, "eap_peer_tls_derive_key;eap_ttls_v0_derive_key",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_peer_tls_derive_session_id;eap_ttls_v0_derive_key",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "wpabuf_alloc;eap_ttls_phase2_request_mschapv2",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_mschapv2",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_peer_tls_encrypt;eap_ttls_encrypt_response;eap_ttls_implicit_identity_request",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_peer_tls_decrypt;eap_ttls_decrypt",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_ttls_getKey",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_ttls_get_session_id",
+              "DOMAIN\mschapv2 user", "auth=MSCHAPV2"),
+             (1, "eap_ttls_get_emsk",
+              "mschapv2 user@domain", "auth=MSCHAPV2"),
+             (1, "wpabuf_alloc;eap_ttls_phase2_request_mschap",
+              "mschap user", "auth=MSCHAP"),
+             (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_mschap",
+              "mschap user", "auth=MSCHAP"),
+             (1, "wpabuf_alloc;eap_ttls_phase2_request_chap",
+              "chap user", "auth=CHAP"),
+             (1, "eap_peer_tls_derive_key;eap_ttls_phase2_request_chap",
+              "chap user", "auth=CHAP"),
+             (1, "wpabuf_alloc;eap_ttls_phase2_request_pap",
+              "pap user", "auth=PAP"),
+             (1, "wpabuf_alloc;eap_ttls_avp_encapsulate",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_mschapv2_init;eap_ttls_phase2_request_eap_method",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_sm_buildIdentity;eap_ttls_phase2_request_eap",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_ttls_avp_encapsulate;eap_ttls_phase2_request_eap",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_ttls_parse_attr_eap",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_peer_tls_encrypt;eap_ttls_encrypt_response;eap_ttls_process_decrypted",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_ttls_fake_identity_request",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_msg_alloc;eap_tls_process_output",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_msg_alloc;eap_peer_tls_build_ack",
+              "user", "autheap=MSCHAPV2"),
+             (1, "eap_peer_tls_phase2_nak;eap_ttls_phase2_request_eap_method",
+              "cert user", "autheap=MSCHAPV2")]
+    tls = dev[0].request("GET tls_library")
+    if tls.startswith("internal"):
+        tests += [(1, "tlsv1_client_decrypt;eap_peer_tls_decrypt",
+                   "user", "autheap=MSCHAPV2")]
+    else:
+        tests += [(1, "tls_connection_decrypt;eap_peer_tls_decrypt",
+                   "user", "autheap=MSCHAPV2")]
     for count, func, identity, phase2 in tests:
         with alloc_fail(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -7028,8 +8970,8 @@ def test_eap_proto_ttls_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "os_get_random;eap_ttls_phase2_request_mschapv2"),
-              (1, "mschapv2_derive_response;eap_ttls_phase2_request_mschapv2") ]
+    tests = [(1, "os_get_random;eap_ttls_phase2_request_mschapv2"),
+             (1, "mschapv2_derive_response;eap_ttls_phase2_request_mschapv2")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -7046,7 +8988,7 @@ def test_eap_proto_ttls_errors(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].wait_disconnected()
 
-    tests = [ (1, "nt_challenge_response;eap_ttls_phase2_request_mschap") ]
+    tests = [(1, "nt_challenge_response;eap_ttls_phase2_request_mschap")]
     for count, func in tests:
         with fail_test(dev[0], count, func):
             dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -7069,7 +9011,7 @@ def test_eap_proto_expanded(dev, apdev):
     eap_proto_expanded_test_done = False
 
     def expanded_handler(ctx, req):
-        logger.info("expanded_handler - RX " + req.encode("hex"))
+        logger.info("expanded_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -7115,7 +9057,7 @@ def test_eap_proto_expanded(dev, apdev):
             return struct.pack(">BBHBBBHB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 4 + 1 + 16 + 6,
                                EAP_TYPE_MSCHAPV2,
-                               1, 0, 4 + 1 + 16 + 6, 16) + 16*'A' + 'foobar'
+                               1, 0, 4 + 1 + 16 + 6, 16) + 16*b'A' + b'foobar'
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Invalid expanded frame type")
@@ -7132,6 +9074,7 @@ def test_eap_proto_expanded(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_expanded_test_done:
@@ -7149,14 +9092,14 @@ def test_eap_proto_expanded(dev, apdev):
             ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED"], timeout=5)
             if ev is None:
                 raise Exception("Timeout on EAP start")
-            if i in [ 1 ]:
+            if i in [1]:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-METHOD"], timeout=5)
                 if ev is None:
                     raise Exception("Timeout on EAP method start")
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-FAILURE"], timeout=5)
                 if ev is None:
                     raise Exception("Timeout on EAP failure")
-            elif i in [ 2, 3 ]:
+            elif i in [2, 3]:
                 ev = dev[0].wait_event(["CTRL-EVENT-EAP-PROPOSED-METHOD"],
                                        timeout=5)
                 if ev is None:
@@ -7180,7 +9123,7 @@ def test_eap_proto_tls(dev, apdev):
     eap_proto_tls_test_wait = False
 
     def tls_handler(ctx, req):
-        logger.info("tls_handler - RX " + req.encode("hex"))
+        logger.info("tls_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -7279,7 +9222,7 @@ def test_eap_proto_tls(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("Test: Fragmented TLS message (long; first)")
-            payload = 1450*'A'
+            payload = 1450*b'A'
             return struct.pack(">BBHBBL", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + 4 + len(payload),
                                EAP_TYPE_TLS, 0xc0, 65536) + payload
@@ -7289,7 +9232,7 @@ def test_eap_proto_tls(dev, apdev):
             if ctx['num'] == idx:
                 logger.info("Test: Fragmented TLS message (long; cont %d)" % i)
                 eap_proto_tls_test_wait = True
-                payload = 1470*'A'
+                payload = 1470*b'A'
                 return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                    4 + 1 + 1 + len(payload),
                                    EAP_TYPE_TLS, 0x40) + payload
@@ -7325,6 +9268,7 @@ def test_eap_proto_tls(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_tls_test_done:
@@ -7367,7 +9311,7 @@ def test_eap_proto_tnc(dev, apdev):
     eap_proto_tnc_test_done = False
 
     def tnc_handler(ctx, req):
-        logger.info("tnc_handler - RX " + req.encode("hex"))
+        logger.info("tnc_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -7477,8 +9421,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "FOO"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"FOO"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7491,8 +9435,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "</TNCCS-Batch><TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"</TNCCS-Batch><TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7505,8 +9449,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch    foo=3></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch    foo=3></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7519,8 +9463,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch    BatchId=123456789></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch    BatchId=123456789></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7533,8 +9477,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><IMC-IMV-Message><TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><IMC-IMV-Message><TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7550,8 +9494,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><IMC-IMV-Message></IMC-IMV-Message><TNCC-TNCS-Message></TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><IMC-IMV-Message></IMC-IMV-Message><TNCC-TNCS-Message></TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7567,8 +9511,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML></TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML></TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7584,8 +9528,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type></TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type></TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7601,8 +9545,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><Base64>abc</TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><Base64>abc</TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7618,8 +9562,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><Base64>aGVsbG8=</Base64></TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><Base64>aGVsbG8=</Base64></TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7635,8 +9579,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = "<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML>hello</XML></TNCC-TNCS-Message></TNCCS-Batch>"
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b"<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML>hello</XML></TNCC-TNCS-Message></TNCCS-Batch>"
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7652,8 +9596,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = '<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation foo=1></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b'<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation foo=1></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7669,8 +9613,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = '<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation type="none"></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b'<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation type="none"></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7686,8 +9630,8 @@ def test_eap_proto_tnc(dev, apdev):
                                EAP_TYPE_TNC, 0x21)
         idx += 1
         if ctx['num'] == idx:
-            logger.info("Received TNCCS-Batch: " + req[6:])
-            resp = '<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation type="isolate"></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
+            logger.info("Received TNCCS-Batch: " + binascii.hexlify(req[6:]).decode())
+            resp = b'<TNCCS-Batch BatchId=2><TNCC-TNCS-Message><Type>00000001</Type><XML><TNCCS-Recommendation type="isolate"></TNCCS-Recommendation></XML></TNCC-TNCS-Message></TNCCS-Batch>'
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(resp),
                                EAP_TYPE_TNC, 0x01) + resp
@@ -7704,6 +9648,7 @@ def test_eap_proto_tnc(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_tnc_test_done:
@@ -7733,7 +9678,7 @@ def test_eap_canned_success_after_identity(dev, apdev):
     """EAP protocol tests for canned EAP-Success after identity"""
     check_eap_capa(dev[0], "MD5")
     def eap_canned_success_handler(ctx, req):
-        logger.info("eap_canned_success_handler - RX " + req.encode("hex"))
+        logger.info("eap_canned_success_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -7758,6 +9703,7 @@ def test_eap_canned_success_after_identity(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        phase1="allow_canned_success=1",
@@ -7789,7 +9735,7 @@ def test_eap_proto_wsc(dev, apdev):
     eap_proto_wsc_test_done = False
 
     def wsc_handler(ctx, req):
-        logger.info("wsc_handler - RX " + req.encode("hex"))
+        logger.info("wsc_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] += 1
@@ -7936,6 +9882,7 @@ def test_eap_proto_wsc(dev, apdev):
 
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
         i = 0
         while not eap_proto_wsc_test_done:
@@ -7966,6 +9913,7 @@ def test_eap_canned_success_before_method(dev, apdev):
     """EAP protocol tests for canned EAP-Success before any method"""
     params = int_eap_server_params()
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
     bssid = apdev[0]['bssid']
     hapd.request("SET ext_eapol_frame_io 1")
 
@@ -7992,6 +9940,7 @@ def test_eap_canned_failure_before_method(dev, apdev):
     """EAP protocol tests for canned EAP-Failure before any method"""
     params = int_eap_server_params()
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
     bssid = apdev[0]['bssid']
     hapd.request("SET ext_eapol_frame_io 1")
     dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", scan_freq="2412",
@@ -8018,6 +9967,7 @@ def test_eap_nak_oom(dev, apdev):
     check_eap_capa(dev[0], "MD5")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
     with alloc_fail(dev[0], 1, "eap_msg_alloc;eap_sm_buildNak"):
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        eap="MD5", identity="sake user", password="password",
@@ -8032,6 +9982,7 @@ def test_eap_nak_expanded(dev, apdev):
     check_eap_capa(dev[0], "VENDOR-TEST")
     params = hostapd.wpa2_eap_params(ssid="eap-test")
     hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
     dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                    eap="VENDOR-TEST WSC",
                    identity="sake user", password="password",
@@ -8086,7 +10037,7 @@ def eap_fast_start(ctx):
     logger.info("Send EAP-FAST/Start")
     return struct.pack(">BBHBBHH", EAP_CODE_REQUEST, ctx['id'],
                        4 + 1 + 1 + 4 + 16,
-                       EAP_TYPE_FAST, 0x21, 4, 16) + 16*'A'
+                       EAP_TYPE_FAST, 0x21, 4, 16) + 16*b'A'
 
 def test_eap_fast_proto(dev, apdev):
     """EAP-FAST Phase protocol testing"""
@@ -8095,7 +10046,7 @@ def test_eap_fast_proto(dev, apdev):
     eap_fast_proto_ctx = None
 
     def eap_handler(ctx, req):
-        logger.info("eap_handler - RX " + req.encode("hex"))
+        logger.info("eap_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -8114,7 +10065,7 @@ def test_eap_fast_proto(dev, apdev):
         idx += 1
         if ctx['num'] == idx:
             logger.info("EAP-FAST: TLS processing failed")
-            data = 'ABCDEFGHIK'
+            data = b'ABCDEFGHIK'
             return struct.pack(">BBHBB", EAP_CODE_REQUEST, ctx['id'],
                                4 + 1 + 1 + len(data),
                                EAP_TYPE_FAST, 0x01) + data
@@ -8129,6 +10080,7 @@ def test_eap_fast_proto(dev, apdev):
     srv = start_radius_server(eap_handler)
     try:
         hapd = start_ap(apdev[0])
+        dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
         dev[0].connect("eap-test", key_mgmt="WPA-EAP", scan_freq="2412",
                        eap="FAST", anonymous_identity="FAST",
                        identity="user", password="password",
@@ -8164,14 +10116,17 @@ def run_eap_fast_phase2(dev, test_payload, test_failure=True):
         except AttributeError:
             state = conn.get_state_string()
         if state:
-            logger.info("State: " + state)
+            logger.info("State: " + str(state))
 
     def process_clienthello(ctx, payload):
         logger.info("Process ClientHello")
         ctx['sslctx'] = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
         ctx['sslctx'].set_info_callback(ssl_info_callback)
         ctx['sslctx'].load_tmp_dh("auth_serv/dh.conf")
-        ctx['sslctx'].set_cipher_list("ADH-AES128-SHA")
+        if OpenSSL.SSL.OPENSSL_VERSION_NUMBER >= 0x10100000:
+            ctx['sslctx'].set_cipher_list("ADH-AES128-SHA:@SECLEVEL=0")
+        else:
+            ctx['sslctx'].set_cipher_list("ADH-AES128-SHA")
         ctx['conn'] = OpenSSL.SSL.Connection(ctx['sslctx'], None)
         ctx['conn'].set_accept_state()
         log_conn_state(ctx['conn'])
@@ -8204,7 +10159,7 @@ def run_eap_fast_phase2(dev, test_payload, test_failure=True):
                            EAP_TYPE_FAST, 0x01) + data
 
     def eap_handler(ctx, req):
-        logger.info("eap_handler - RX " + req.encode("hex"))
+        logger.info("eap_handler - RX " + binascii.hexlify(req).decode())
         if 'num' not in ctx:
             ctx['num'] = 0
         ctx['num'] = ctx['num'] + 1
@@ -8273,137 +10228,138 @@ def test_eap_fast_proto_phase2(dev, apdev):
         raise HwsimSkip("OpenSSL python method not available")
     check_eap_capa(dev[0], "FAST")
     hapd = start_ap(apdev[0])
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
-    tests = [ ("Too short Phase 2 TLV frame (len=3)",
-               "ABC",
-               False),
-              ("EAP-FAST: TLV overflow",
-               struct.pack(">HHB", 0, 2, 0xff),
-               False),
-              ("EAP-FAST: Unknown TLV (optional and mandatory)",
-               struct.pack(">HHB", 0, 1, 0xff) +
-               struct.pack(">HHB", EAP_TLV_TYPE_MANDATORY, 1, 0xff),
-               True),
-              ("EAP-FAST: More than one EAP-Payload TLV in the message",
-               struct.pack(">HHBHHB",
-                           EAP_TLV_EAP_PAYLOAD_TLV, 1, 0xff,
-                           EAP_TLV_EAP_PAYLOAD_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: Unknown Result 255 and More than one Result TLV in the message",
-               struct.pack(">HHHHHH",
-                           EAP_TLV_RESULT_TLV, 2, 0xff,
-                           EAP_TLV_RESULT_TLV, 2, 0xff),
-               True),
-              ("EAP-FAST: Too short Result TLV",
-               struct.pack(">HHB", EAP_TLV_RESULT_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: Unknown Intermediate Result 255 and More than one Intermediate-Result TLV in the message",
-               struct.pack(">HHHHHH",
-                           EAP_TLV_INTERMEDIATE_RESULT_TLV, 2, 0xff,
-                           EAP_TLV_INTERMEDIATE_RESULT_TLV, 2, 0xff),
-               True),
-              ("EAP-FAST: Too short Intermediate-Result TLV",
-               struct.pack(">HHB", EAP_TLV_INTERMEDIATE_RESULT_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: More than one Crypto-Binding TLV in the message",
-               struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*'A' +
-               struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*'A',
-               True),
-              ("EAP-FAST: Too short Crypto-Binding TLV",
-               struct.pack(">HHB", EAP_TLV_CRYPTO_BINDING_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: More than one Request-Action TLV in the message",
-               struct.pack(">HHBBHHBB",
-                           EAP_TLV_REQUEST_ACTION_TLV, 2, 0xff, 0xff,
-                           EAP_TLV_REQUEST_ACTION_TLV, 2, 0xff, 0xff),
-               True),
-              ("EAP-FAST: Too short Request-Action TLV",
-               struct.pack(">HHB", EAP_TLV_REQUEST_ACTION_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: More than one PAC TLV in the message",
-               struct.pack(">HHBHHB",
-                           EAP_TLV_PAC_TLV, 1, 0xff,
-                           EAP_TLV_PAC_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: Too short EAP Payload TLV (Len=3)",
-               struct.pack(">HH3B",
-                           EAP_TLV_EAP_PAYLOAD_TLV, 3, 0, 0, 0),
-               False),
-              ("EAP-FAST: Too short Phase 2 request (Len=0)",
-               struct.pack(">HHBBH",
-                           EAP_TLV_EAP_PAYLOAD_TLV, 4,
-                           EAP_CODE_REQUEST, 0, 0),
-               False),
-              ("EAP-FAST: EAP packet overflow in EAP Payload TLV",
-               struct.pack(">HHBBH",
-                           EAP_TLV_EAP_PAYLOAD_TLV, 4,
-                           EAP_CODE_REQUEST, 0, 4 + 1),
-               False),
-              ("EAP-FAST: Unexpected code=0 in Phase 2 EAP header",
-               struct.pack(">HHBBH",
-                           EAP_TLV_EAP_PAYLOAD_TLV, 4,
-                           0, 0, 0),
-               False),
-              ("EAP-FAST: PAC TLV without Result TLV acknowledging success",
-               struct.pack(">HHB", EAP_TLV_PAC_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: PAC TLV does not include all the required fields",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHB", EAP_TLV_PAC_TLV, 1, 0xff),
-               True),
-              ("EAP-FAST: Invalid PAC-Key length 0, Ignored unknown PAC type 0, and PAC TLV overrun (type=0 len=2 left=1)",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHHB", EAP_TLV_PAC_TLV, 4 + 4 + 5,
-                           PAC_TYPE_PAC_KEY, 0, 0, 0, 0, 2, 0),
-               True),
-              ("EAP-FAST: PAC-Info does not include all the required fields",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHH", EAP_TLV_PAC_TLV, 4 + 4 + 4 + 32,
-                           PAC_TYPE_PAC_OPAQUE, 0,
-                           PAC_TYPE_PAC_INFO, 0,
-                           PAC_TYPE_PAC_KEY, 32) + 32*'A',
-               True),
-              ("EAP-FAST: Invalid CRED_LIFETIME length, Ignored unknown PAC-Info type 0, and Invalid PAC-Type length 1",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHHHHHHBHH", EAP_TLV_PAC_TLV, 4 + 4 + 13 + 4 + 32,
-                           PAC_TYPE_PAC_OPAQUE, 0,
-                           PAC_TYPE_PAC_INFO, 13, PAC_TYPE_CRED_LIFETIME, 0,
-                           0, 0, PAC_TYPE_PAC_TYPE, 1, 0,
-                           PAC_TYPE_PAC_KEY, 32) + 32*'A',
-               True),
-              ("EAP-FAST: Unsupported PAC-Type 0",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHHHHH", EAP_TLV_PAC_TLV, 4 + 4 + 6 + 4 + 32,
-                           PAC_TYPE_PAC_OPAQUE, 0,
-                           PAC_TYPE_PAC_INFO, 6, PAC_TYPE_PAC_TYPE, 2, 0,
-                           PAC_TYPE_PAC_KEY, 32) + 32*'A',
-               True),
-              ("EAP-FAST: PAC-Info overrun (type=0 len=2 left=1)",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHHBHH", EAP_TLV_PAC_TLV, 4 + 4 + 5 + 4 + 32,
-                           PAC_TYPE_PAC_OPAQUE, 0,
-                           PAC_TYPE_PAC_INFO, 5, 0, 2, 1,
-                           PAC_TYPE_PAC_KEY, 32) + 32*'A',
-               True),
-              ("EAP-FAST: Valid PAC",
-               struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
-                           EAP_TLV_RESULT_SUCCESS) +
-               struct.pack(">HHHHHHHHBHHBHH", EAP_TLV_PAC_TLV,
-                           4 + 4 + 10 + 4 + 32,
-                           PAC_TYPE_PAC_OPAQUE, 0,
-                           PAC_TYPE_PAC_INFO, 10, PAC_TYPE_A_ID, 1, 0x41,
-                           PAC_TYPE_A_ID_INFO, 1, 0x42,
-                           PAC_TYPE_PAC_KEY, 32) + 32*'A',
-               True),
-              ("EAP-FAST: Invalid version/subtype in Crypto-Binding TLV",
-               struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*'A',
-               True) ]
+    tests = [("Too short Phase 2 TLV frame (len=3)",
+              "ABC",
+              False),
+             ("EAP-FAST: TLV overflow",
+              struct.pack(">HHB", 0, 2, 0xff),
+              False),
+             ("EAP-FAST: Unknown TLV (optional and mandatory)",
+              struct.pack(">HHB", 0, 1, 0xff) +
+              struct.pack(">HHB", EAP_TLV_TYPE_MANDATORY, 1, 0xff),
+              True),
+             ("EAP-FAST: More than one EAP-Payload TLV in the message",
+              struct.pack(">HHBHHB",
+                          EAP_TLV_EAP_PAYLOAD_TLV, 1, 0xff,
+                          EAP_TLV_EAP_PAYLOAD_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: Unknown Result 255 and More than one Result TLV in the message",
+              struct.pack(">HHHHHH",
+                          EAP_TLV_RESULT_TLV, 2, 0xff,
+                          EAP_TLV_RESULT_TLV, 2, 0xff),
+              True),
+             ("EAP-FAST: Too short Result TLV",
+              struct.pack(">HHB", EAP_TLV_RESULT_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: Unknown Intermediate Result 255 and More than one Intermediate-Result TLV in the message",
+              struct.pack(">HHHHHH",
+                          EAP_TLV_INTERMEDIATE_RESULT_TLV, 2, 0xff,
+                          EAP_TLV_INTERMEDIATE_RESULT_TLV, 2, 0xff),
+              True),
+             ("EAP-FAST: Too short Intermediate-Result TLV",
+              struct.pack(">HHB", EAP_TLV_INTERMEDIATE_RESULT_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: More than one Crypto-Binding TLV in the message",
+              struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*b'A' +
+              struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*b'A',
+              True),
+             ("EAP-FAST: Too short Crypto-Binding TLV",
+              struct.pack(">HHB", EAP_TLV_CRYPTO_BINDING_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: More than one Request-Action TLV in the message",
+              struct.pack(">HHBBHHBB",
+                          EAP_TLV_REQUEST_ACTION_TLV, 2, 0xff, 0xff,
+                          EAP_TLV_REQUEST_ACTION_TLV, 2, 0xff, 0xff),
+              True),
+             ("EAP-FAST: Too short Request-Action TLV",
+              struct.pack(">HHB", EAP_TLV_REQUEST_ACTION_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: More than one PAC TLV in the message",
+              struct.pack(">HHBHHB",
+                          EAP_TLV_PAC_TLV, 1, 0xff,
+                          EAP_TLV_PAC_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: Too short EAP Payload TLV (Len=3)",
+              struct.pack(">HH3B",
+                          EAP_TLV_EAP_PAYLOAD_TLV, 3, 0, 0, 0),
+              False),
+             ("EAP-FAST: Too short Phase 2 request (Len=0)",
+              struct.pack(">HHBBH",
+                          EAP_TLV_EAP_PAYLOAD_TLV, 4,
+                          EAP_CODE_REQUEST, 0, 0),
+              False),
+             ("EAP-FAST: EAP packet overflow in EAP Payload TLV",
+              struct.pack(">HHBBH",
+                          EAP_TLV_EAP_PAYLOAD_TLV, 4,
+                          EAP_CODE_REQUEST, 0, 4 + 1),
+              False),
+             ("EAP-FAST: Unexpected code=0 in Phase 2 EAP header",
+              struct.pack(">HHBBH",
+                          EAP_TLV_EAP_PAYLOAD_TLV, 4,
+                          0, 0, 0),
+              False),
+             ("EAP-FAST: PAC TLV without Result TLV acknowledging success",
+              struct.pack(">HHB", EAP_TLV_PAC_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: PAC TLV does not include all the required fields",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHB", EAP_TLV_PAC_TLV, 1, 0xff),
+              True),
+             ("EAP-FAST: Invalid PAC-Key length 0, Ignored unknown PAC type 0, and PAC TLV overrun (type=0 len=2 left=1)",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHHB", EAP_TLV_PAC_TLV, 4 + 4 + 5,
+                          PAC_TYPE_PAC_KEY, 0, 0, 0, 0, 2, 0),
+              True),
+             ("EAP-FAST: PAC-Info does not include all the required fields",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHH", EAP_TLV_PAC_TLV, 4 + 4 + 4 + 32,
+                          PAC_TYPE_PAC_OPAQUE, 0,
+                          PAC_TYPE_PAC_INFO, 0,
+                          PAC_TYPE_PAC_KEY, 32) + 32*b'A',
+              True),
+             ("EAP-FAST: Invalid CRED_LIFETIME length, Ignored unknown PAC-Info type 0, and Invalid PAC-Type length 1",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHHHHHHBHH", EAP_TLV_PAC_TLV, 4 + 4 + 13 + 4 + 32,
+                          PAC_TYPE_PAC_OPAQUE, 0,
+                          PAC_TYPE_PAC_INFO, 13, PAC_TYPE_CRED_LIFETIME, 0,
+                          0, 0, PAC_TYPE_PAC_TYPE, 1, 0,
+                          PAC_TYPE_PAC_KEY, 32) + 32*b'A',
+              True),
+             ("EAP-FAST: Unsupported PAC-Type 0",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHHHHH", EAP_TLV_PAC_TLV, 4 + 4 + 6 + 4 + 32,
+                          PAC_TYPE_PAC_OPAQUE, 0,
+                          PAC_TYPE_PAC_INFO, 6, PAC_TYPE_PAC_TYPE, 2, 0,
+                          PAC_TYPE_PAC_KEY, 32) + 32*b'A',
+              True),
+             ("EAP-FAST: PAC-Info overrun (type=0 len=2 left=1)",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHHBHH", EAP_TLV_PAC_TLV, 4 + 4 + 5 + 4 + 32,
+                          PAC_TYPE_PAC_OPAQUE, 0,
+                          PAC_TYPE_PAC_INFO, 5, 0, 2, 1,
+                          PAC_TYPE_PAC_KEY, 32) + 32*b'A',
+              True),
+             ("EAP-FAST: Valid PAC",
+              struct.pack(">HHH", EAP_TLV_RESULT_TLV, 2,
+                          EAP_TLV_RESULT_SUCCESS) +
+              struct.pack(">HHHHHHHHBHHBHH", EAP_TLV_PAC_TLV,
+                          4 + 4 + 10 + 4 + 32,
+                          PAC_TYPE_PAC_OPAQUE, 0,
+                          PAC_TYPE_PAC_INFO, 10, PAC_TYPE_A_ID, 1, 0x41,
+                          PAC_TYPE_A_ID_INFO, 1, 0x42,
+                          PAC_TYPE_PAC_KEY, 32) + 32*b'A',
+              True),
+             ("EAP-FAST: Invalid version/subtype in Crypto-Binding TLV",
+              struct.pack(">HH", EAP_TLV_CRYPTO_BINDING_TLV, 60) + 60*b'A',
+              True)]
     for title, payload, failure in tests:
         logger.info("Phase 2 test: " + title)
         run_eap_fast_phase2(dev, payload, failure)
@@ -8414,6 +10370,7 @@ def test_eap_fast_tlv_nak_oom(dev, apdev):
         raise HwsimSkip("OpenSSL python method not available")
     check_eap_capa(dev[0], "FAST")
     hapd = start_ap(apdev[0])
+    dev[0].scan_for_bss(hapd.own_addr(), freq=2412)
 
     with alloc_fail(dev[0], 1, "eap_fast_tlv_nak"):
         run_eap_fast_phase2(dev, struct.pack(">HHB", EAP_TLV_TYPE_MANDATORY,

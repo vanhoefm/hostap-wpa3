@@ -17,26 +17,16 @@ import hostapd
 from tshark import run_tshark
 from wpasupplicant import WpaSupplicant
 import hwsim_utils
-from utils import HwsimSkip, alloc_fail
-from test_erp import check_erp_capa, start_erp_as
+from utils import *
+from test_erp import start_erp_as
 from test_ap_hs20 import ip_checksum
-
-def check_fils_capa(dev):
-    capa = dev.get_capability("fils")
-    if capa is None or "FILS" not in capa:
-        raise HwsimSkip("FILS not supported")
-
-def check_fils_sk_pfs_capa(dev):
-    capa = dev.get_capability("fils")
-    if capa is None or "FILS-SK-PFS" not in capa:
-        raise HwsimSkip("FILS-SK-PFS not supported")
 
 def test_fils_sk_full_auth(dev, apdev, params):
     """FILS SK full authentication"""
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -84,7 +74,7 @@ def test_fils_sk_sha384_full_auth(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -132,7 +122,7 @@ def test_fils_sk_pmksa_caching(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -148,6 +138,67 @@ def test_fils_sk_pmksa_caching(dev, apdev, params):
                         eap="PSK", identity="psk.user@example.com",
                         password_hex="0123456789abcdef0123456789abcdef",
                         erp="1", scan_freq="2412")
+    pmksa = dev[0].get_pmksa(bssid)
+    if pmksa is None:
+        raise Exception("No PMKSA cache entry created")
+
+    dev[0].request("DISCONNECT")
+    dev[0].wait_disconnected()
+
+    dev[0].dump_monitor()
+    dev[0].select_network(id, freq=2412)
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using PMKSA caching timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+    pmksa2 = dev[0].get_pmksa(bssid)
+    if pmksa2 is None:
+        raise Exception("No PMKSA cache entry found")
+    if pmksa['pmkid'] != pmksa2['pmkid']:
+        raise Exception("Unexpected PMKID change")
+
+    # Verify EAPOL reauthentication after FILS authentication
+    hapd.request("EAPOL_REAUTH " + dev[0].own_addr())
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED"], timeout=5)
+    if ev is None:
+        raise Exception("EAP authentication did not start")
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-SUCCESS"], timeout=5)
+    if ev is None:
+        raise Exception("EAP authentication did not succeed")
+    time.sleep(0.1)
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
+def test_fils_sk_pmksa_caching_ocv(dev, apdev, params):
+    """FILS SK and PMKSA caching with OCV"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['auth_server_port'] = "18128"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['ieee80211w'] = '1'
+    params['ocv'] = '1'
+    try:
+        hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+    except Exception as e:
+        if "Failed to set hostapd parameter ocv" in str(e):
+            raise HwsimSkip("OCV not supported")
+        raise
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
+                        eap="PSK", identity="psk.user@example.com",
+                        password_hex="0123456789abcdef0123456789abcdef",
+                        erp="1", scan_freq="2412", ieee80211w="1", ocv="1")
     pmksa = dev[0].get_pmksa(bssid)
     if pmksa is None:
         raise Exception("No PMKSA cache entry created")
@@ -265,8 +316,7 @@ def test_fils_sk_pmksa_caching_ctrl_ext(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    hapd_as = start_erp_as(apdev[1],
-                           msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    hapd_as = start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -334,8 +384,7 @@ def run_fils_sk_erp(dev, apdev, key_mgmt, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1],
-                 msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -374,7 +423,7 @@ def test_fils_sk_erp_followed_by_pmksa_caching(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -412,7 +461,7 @@ def test_fils_sk_erp_followed_by_pmksa_caching(dev, apdev, params):
 
     pmksa = dev[0].get_pmksa(bssid)
     if pmksa is None:
-	    raise Exception("No PMKSA cache entry created")
+        raise Exception("No PMKSA cache entry created")
 
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected()
@@ -434,16 +483,16 @@ def test_fils_sk_erp_followed_by_pmksa_caching(dev, apdev, params):
 
     pmksa2 = dev[0].get_pmksa(bssid)
     if pmksa2 is None:
-	    raise Exception("No PMKSA cache entry found")
+        raise Exception("No PMKSA cache entry found")
     if pmksa['pmkid'] != pmksa2['pmkid']:
-	    raise Exception("Unexpected PMKID change")
+        raise Exception("Unexpected PMKID change")
 
 def test_fils_sk_erp_another_ssid(dev, apdev, params):
     """FILS SK using ERP and roam to another SSID"""
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -499,20 +548,20 @@ def test_fils_sk_multiple_realms(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
     params['wpa_key_mgmt'] = "FILS-SHA256"
     params['auth_server_port'] = "18128"
     params['erp_domain'] = 'example.com'
-    fils_realms = [ 'r1.example.org', 'r2.EXAMPLE.org', 'r3.example.org',
-                    'r4.example.org', 'r5.example.org', 'r6.example.org',
-                    'r7.example.org', 'r8.example.org',
-                    'example.com',
-                    'r9.example.org', 'r10.example.org', 'r11.example.org',
-                    'r12.example.org', 'r13.example.org', 'r14.example.org',
-                    'r15.example.org', 'r16.example.org' ]
+    fils_realms = ['r1.example.org', 'r2.EXAMPLE.org', 'r3.example.org',
+                   'r4.example.org', 'r5.example.org', 'r6.example.org',
+                   'r7.example.org', 'r8.example.org',
+                   'example.com',
+                   'r9.example.org', 'r10.example.org', 'r11.example.org',
+                   'r12.example.org', 'r13.example.org', 'r14.example.org',
+                   'r15.example.org', 'r16.example.org']
     params['fils_realm'] = fils_realms
     params['fils_cache_id'] = "1234"
     params['hessid'] = bssid
@@ -542,8 +591,8 @@ def test_fils_sk_multiple_realms(dev, apdev, params):
     expected = ''
     count = 0
     for realm in fils_realms:
-        hash = hashlib.sha256(realm.lower()).digest()
-        expected += binascii.hexlify(hash[0:2])
+        hash = hashlib.sha256(realm.lower().encode()).digest()
+        expected += binascii.hexlify(hash[0:2]).decode()
         count += 1
         if count == 7:
             break
@@ -552,11 +601,11 @@ def test_fils_sk_multiple_realms(dev, apdev, params):
 
     if 'anqp_fils_realm_info' not in bss:
         raise Exception("FILS Realm Information ANQP-element not seen")
-    info = bss['anqp_fils_realm_info'];
+    info = bss['anqp_fils_realm_info']
     expected = ''
     for realm in fils_realms:
-        hash = hashlib.sha256(realm.lower()).digest()
-        expected += binascii.hexlify(hash[0:2])
+        hash = hashlib.sha256(realm.lower().encode()).digest()
+        expected += binascii.hexlify(hash[0:2]).decode()
     if info != expected:
         raise Exception("Unexpected FILS Realm Info ANQP-element: " + info)
 
@@ -583,36 +632,36 @@ def test_fils_sk_multiple_realms(dev, apdev, params):
     hwsim_utils.test_connectivity(dev[0], hapd)
 
 # DHCP message op codes
-BOOTREQUEST=1
-BOOTREPLY=2
+BOOTREQUEST = 1
+BOOTREPLY = 2
 
-OPT_PAD=0
-OPT_DHCP_MESSAGE_TYPE=53
-OPT_RAPID_COMMIT=80
-OPT_END=255
+OPT_PAD = 0
+OPT_DHCP_MESSAGE_TYPE = 53
+OPT_RAPID_COMMIT = 80
+OPT_END = 255
 
-DHCPDISCOVER=1
-DHCPOFFER=2
-DHCPREQUEST=3
-DHCPDECLINE=4
-DHCPACK=5
-DHCPNAK=6
-DHCPRELEASE=7
-DHCPINFORM=8
+DHCPDISCOVER = 1
+DHCPOFFER = 2
+DHCPREQUEST = 3
+DHCPDECLINE = 4
+DHCPACK = 5
+DHCPNAK = 6
+DHCPRELEASE = 7
+DHCPINFORM = 8
 
 def build_dhcp(req, dhcp_msg, chaddr, giaddr="0.0.0.0",
                ip_src="0.0.0.0", ip_dst="255.255.255.255",
                rapid_commit=True, override_op=None, magic_override=None,
                opt_end=True, extra_op=None):
-    proto = '\x08\x00' # IPv4
+    proto = b'\x08\x00' # IPv4
     _ip_src = socket.inet_pton(socket.AF_INET, ip_src)
     _ip_dst = socket.inet_pton(socket.AF_INET, ip_dst)
 
-    _ciaddr = '\x00\x00\x00\x00'
-    _yiaddr = '\x00\x00\x00\x00'
-    _siaddr = '\x00\x00\x00\x00'
+    _ciaddr = b'\x00\x00\x00\x00'
+    _yiaddr = b'\x00\x00\x00\x00'
+    _siaddr = b'\x00\x00\x00\x00'
     _giaddr = socket.inet_pton(socket.AF_INET, giaddr)
-    _chaddr = binascii.unhexlify(chaddr.replace(':','')) + 10*'\x00'
+    _chaddr = binascii.unhexlify(chaddr.replace(':', '')) + 10 * b'\x00'
     htype = 1 # Hardware address type; 1 = Ethernet
     hlen = 6 # Hardware address length
     hops = 0
@@ -630,14 +679,14 @@ def build_dhcp(req, dhcp_msg, chaddr, giaddr="0.0.0.0",
     if override_op is not None:
         op = override_op
     payload = struct.pack('>BBBBLHH', op, htype, hlen, hops, xid, secs, flags)
-    sname = 64*'\x00'
-    file = 128*'\x00'
+    sname = 64*b'\x00'
+    file = 128*b'\x00'
     payload += _ciaddr + _yiaddr + _siaddr + _giaddr + _chaddr + sname + file
     # magic - DHCP
     if magic_override is not None:
         payload += magic_override
     else:
-        payload += '\x63\x82\x53\x63'
+        payload += b'\x63\x82\x53\x63'
     # Option: DHCP Message Type
     if dhcp_msg is not None:
         payload += struct.pack('BBB', OPT_DHCP_MESSAGE_TYPE, 1, dhcp_msg)
@@ -655,7 +704,7 @@ def build_dhcp(req, dhcp_msg, chaddr, giaddr="0.0.0.0",
 
     tot_len = 20 + len(udp)
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     ipv4 = start + csum + _ip_src + _ip_dst
 
@@ -685,7 +734,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -703,19 +752,19 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
     dev[0].request("ERP_FLUSH")
     if "OK" not in dev[0].request("FILS_HLP_REQ_FLUSH"):
         raise Exception("Failed to flush pending FILS HLP requests")
-    tests = [ "",
-              "q",
-              "ff:ff:ff:ff:ff:ff",
-              "ff:ff:ff:ff:ff:ff q" ]
+    tests = ["",
+             "q",
+             "ff:ff:ff:ff:ff:ff",
+             "ff:ff:ff:ff:ff:ff q"]
     for t in tests:
         if "FAIL" not in dev[0].request("FILS_HLP_REQ_ADD " + t):
             raise Exception("Invalid FILS_HLP_REQ_ADD accepted: " + t)
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr())
-    tests = [ "ff:ff:ff:ff:ff:ff aabb",
-              "ff:ff:ff:ff:ff:ff " + 255*'cc',
-              hapd.own_addr() + " ddee010203040506070809",
-              "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc) ]
+    tests = ["ff:ff:ff:ff:ff:ff aabb",
+             "ff:ff:ff:ff:ff:ff " + 255*'cc',
+             hapd.own_addr() + " ddee010203040506070809",
+             "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()]
     for t in tests:
         if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + t):
             raise Exception("FILS_HLP_REQ_ADD failed: " + t)
@@ -730,7 +779,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
 
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     if rapid_commit_server:
         # TODO: Proper rapid commit response
@@ -741,7 +790,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
         dhcpdisc = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                               chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
         sock.sendto(dhcpdisc[2+20+8:], addr)
-        (msg,addr) = sock.recvfrom(1000)
+        (msg, addr) = sock.recvfrom(1000)
         logger.debug("Received DHCP message from %s" % str(addr))
         dhcpdisc = build_dhcp(req=False, dhcp_msg=DHCPACK, rapid_commit=False,
                               chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
@@ -756,7 +805,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
         raise Exception("Unexpected ethertype in HLP response: %d" % proto)
     frame = frame[2:]
     ip = frame[0:20]
-    if ip_checksum(ip) != '\x00\x00':
+    if ip_checksum(ip) != b'\x00\x00':
         raise Exception("IP header checksum mismatch in HLP response")
     frame = frame[20:]
     udp = frame[0:8]
@@ -766,7 +815,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
         raise Exception("Unexpected UDP port in HLP response")
     dhcp = frame[0:28]
     frame = frame[28:]
-    op,htype,hlen,hops,xid,secs,flags,ciaddr,yiaddr,siaddr,giaddr = struct.unpack('>4BL2H4L', dhcp)
+    op, htype, hlen, hops, xid, secs, flags, ciaddr, yiaddr, siaddr, giaddr = struct.unpack('>4BL2H4L', dhcp)
     chaddr = frame[0:16]
     frame = frame[16:]
     sname = frame[0:64]
@@ -774,7 +823,7 @@ def run_fils_sk_hlp(dev, apdev, rapid_commit_server, params):
     file = frame[0:128]
     frame = frame[128:]
     options = frame
-    if options[0:4] != '\x63\x82\x53\x63':
+    if options[0:4] != b'\x63\x82\x53\x63':
         raise Exception("No DHCP magic seen in HLP response")
     options = options[4:]
     # TODO: fully parse and validate DHCPACK options
@@ -790,7 +839,7 @@ def test_fils_sk_hlp_timeout(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -807,7 +856,7 @@ def test_fils_sk_hlp_timeout(dev, apdev, params):
         raise Exception("Failed to flush pending FILS HLP requests")
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr())
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc)):
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
                         eap="PSK", identity="psk.user@example.com",
@@ -820,7 +869,7 @@ def test_fils_sk_hlp_timeout(dev, apdev, params):
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
 
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     # Wait for HLP wait timeout to hit
     # FILS: HLP response timeout - continue with association response
@@ -833,7 +882,7 @@ def test_fils_sk_hlp_oom(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -851,7 +900,7 @@ def test_fils_sk_hlp_oom(dev, apdev, params):
         raise Exception("Failed to flush pending FILS HLP requests")
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr())
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc)):
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
                         eap="PSK", identity="psk.user@example.com",
@@ -885,7 +934,7 @@ def test_fils_sk_hlp_oom(dev, apdev, params):
     dev[0].dump_monitor()
     with alloc_fail(hapd, 1, "wpabuf_alloc;fils_dhcp_handler"):
         dev[0].select_network(id, freq=2412)
-        (msg,addr) = sock.recvfrom(1000)
+        (msg, addr) = sock.recvfrom(1000)
         logger.debug("Received DHCP message from %s" % str(addr))
         dhcpdisc = build_dhcp(req=False, dhcp_msg=DHCPACK,
                               chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
@@ -897,7 +946,7 @@ def test_fils_sk_hlp_oom(dev, apdev, params):
     dev[0].dump_monitor()
     with alloc_fail(hapd, 1, "wpabuf_resize;fils_dhcp_handler"):
         dev[0].select_network(id, freq=2412)
-        (msg,addr) = sock.recvfrom(1000)
+        (msg, addr) = sock.recvfrom(1000)
         logger.debug("Received DHCP message from %s" % str(addr))
         dhcpdisc = build_dhcp(req=False, dhcp_msg=DHCPACK,
                               chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
@@ -908,7 +957,7 @@ def test_fils_sk_hlp_oom(dev, apdev, params):
 
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
@@ -925,7 +974,7 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = fils_hlp_config(fils_hlp_wait_time=30)
@@ -938,21 +987,21 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
 
     tot_len = 20 + 1
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    _ip_src = '\x00\x00\x00\x00'
-    _ip_dst = '\x00\x00\x00\x00'
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    _ip_src = b'\x00\x00\x00\x00'
+    _ip_dst = b'\x00\x00\x00\x00'
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     ipv4_overflow = start + csum + _ip_src + _ip_dst
 
     tot_len = 20
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 123)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     ipv4_unknown_proto = start + csum + _ip_src + _ip_dst
 
     tot_len = 20
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     ipv4_missing_udp_hdr = start + csum + _ip_src + _ip_dst
 
@@ -961,14 +1010,14 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     udp = struct.pack('>HHHH', src_port, dst_port, 8 + 1, 0)
     tot_len = 20 + len(udp)
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     udp_overflow = start + csum + _ip_src + _ip_dst + udp
 
     udp = struct.pack('>HHHH', src_port, dst_port, 7, 0)
     tot_len = 20 + len(udp)
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     udp_underflow = start + csum + _ip_src + _ip_dst + udp
 
@@ -977,7 +1026,7 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     udp = struct.pack('>HHHH', src_port, dst_port, 8, 0)
     tot_len = 20 + len(udp)
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     udp_unknown_port = start + csum + _ip_src + _ip_dst + udp
 
@@ -986,40 +1035,40 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     udp = struct.pack('>HHHH', src_port, dst_port, 8, 0)
     tot_len = 20 + len(udp)
     start = struct.pack('>BBHHBBBB', 0x45, 0, tot_len, 0, 0, 0, 128, 17)
-    ipv4 = start + '\x00\x00' + _ip_src + _ip_dst
+    ipv4 = start + b'\x00\x00' + _ip_src + _ip_dst
     csum = ip_checksum(ipv4)
     dhcp_missing_data = start + csum + _ip_src + _ip_dst + udp
 
     dhcp_not_req = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                               chaddr=dev[0].own_addr(), override_op=BOOTREPLY)
     dhcp_no_magic = build_dhcp(req=True, dhcp_msg=None,
-                               chaddr=dev[0].own_addr(), magic_override='',
+                               chaddr=dev[0].own_addr(), magic_override=b'',
                                rapid_commit=False, opt_end=False)
     dhcp_unknown_magic = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                                     chaddr=dev[0].own_addr(),
-                                    magic_override='\x00\x00\x00\x00')
+                                    magic_override=b'\x00\x00\x00\x00')
     dhcp_opts = build_dhcp(req=True, dhcp_msg=DHCPNAK,
                            chaddr=dev[0].own_addr(),
-                           extra_op='\x00\x11', opt_end=False)
+                           extra_op=b'\x00\x11', opt_end=False)
     dhcp_opts2 = build_dhcp(req=True, dhcp_msg=DHCPNAK,
                             chaddr=dev[0].own_addr(),
-                            extra_op='\x11\x01', opt_end=False)
+                            extra_op=b'\x11\x01', opt_end=False)
     dhcp_valid = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                             chaddr=dev[0].own_addr())
 
-    tests = [ "ff",
-              "0800",
-              "0800" + 20*"00",
-              "0800" + binascii.hexlify(ipv4_overflow),
-              "0800" + binascii.hexlify(ipv4_unknown_proto),
-              "0800" + binascii.hexlify(ipv4_missing_udp_hdr),
-              "0800" + binascii.hexlify(udp_overflow),
-              "0800" + binascii.hexlify(udp_underflow),
-              "0800" + binascii.hexlify(udp_unknown_port),
-              "0800" + binascii.hexlify(dhcp_missing_data),
-              binascii.hexlify(dhcp_not_req),
-              binascii.hexlify(dhcp_no_magic),
-              binascii.hexlify(dhcp_unknown_magic) ]
+    tests = ["ff",
+             "0800",
+             "0800" + 20*"00",
+             "0800" + binascii.hexlify(ipv4_overflow).decode(),
+             "0800" + binascii.hexlify(ipv4_unknown_proto).decode(),
+             "0800" + binascii.hexlify(ipv4_missing_udp_hdr).decode(),
+             "0800" + binascii.hexlify(udp_overflow).decode(),
+             "0800" + binascii.hexlify(udp_underflow).decode(),
+             "0800" + binascii.hexlify(udp_unknown_port).decode(),
+             "0800" + binascii.hexlify(dhcp_missing_data).decode(),
+             binascii.hexlify(dhcp_not_req).decode(),
+             binascii.hexlify(dhcp_no_magic).decode(),
+             binascii.hexlify(dhcp_unknown_magic).decode()]
     for t in tests:
         if "OK" not in dev[0].request("FILS_HLP_REQ_ADD ff:ff:ff:ff:ff:ff " + t):
             raise Exception("FILS_HLP_REQ_ADD failed: " + t)
@@ -1038,8 +1087,8 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     dev[0].wait_disconnected()
 
     dev[0].request("FILS_HLP_REQ_FLUSH")
-    tests = [ binascii.hexlify(dhcp_opts),
-              binascii.hexlify(dhcp_opts2) ]
+    tests = [binascii.hexlify(dhcp_opts).decode(),
+             binascii.hexlify(dhcp_opts2).decode()]
     for t in tests:
         if "OK" not in dev[0].request("FILS_HLP_REQ_ADD ff:ff:ff:ff:ff:ff " + t):
             raise Exception("FILS_HLP_REQ_ADD failed: " + t)
@@ -1051,7 +1100,7 @@ def test_fils_sk_hlp_req_parsing(dev, apdev, params):
     dev[0].wait_disconnected()
 
     dev[0].request("FILS_HLP_REQ_FLUSH")
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcp_valid)):
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcp_valid).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     hapd.set("own_ip_addr", "0.0.0.0")
     dev[0].select_network(id, freq=2412)
@@ -1094,7 +1143,7 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1112,7 +1161,7 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
         raise Exception("Failed to flush pending FILS HLP requests")
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr())
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc)):
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
                         eap="PSK", identity="psk.user@example.com",
@@ -1131,21 +1180,21 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
 
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpdisc = build_dhcp(req=False, dhcp_msg=DHCPACK,
                           chaddr=dev[0].own_addr(), giaddr="127.0.0.3")
     #sock.sendto(dhcpdisc[2+20+8:], addr)
-    chaddr = binascii.unhexlify(dev[0].own_addr().replace(':','')) + 10*'\x00'
-    tests = [ "\x00",
-              "\x02" + 500 * "\x00",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + 500 * "\x00",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + 16*"\x00" + 64*"\x00" + 128*"\x00" + "\x63\x82\x53\x63",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + 16*"\x00" + 64*"\x00" + 128*"\x00" + "\x63\x82\x53\x63" + "\x00\x11",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + 16*"\x00" + 64*"\x00" + 128*"\x00" + "\x63\x82\x53\x63" + "\x11\x01",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + chaddr + 64*"\x00" + 128*"\x00" + "\x63\x82\x53\x63" + "\x35\x00\xff",
-              "\x02\x00\x00\x00" + 20*"\x00" + "\x7f\x00\x00\x03" + chaddr + 64*"\x00" + 128*"\x00" + "\x63\x82\x53\x63" + "\x35\x01\x00\xff",
-              1501 * "\x00" ]
+    chaddr = binascii.unhexlify(dev[0].own_addr().replace(':', '')) + 10*b'\x00'
+    tests = [b"\x00",
+             b"\x02" + 500 * b"\x00",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + 500*b"\x00",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + 16*b"\x00" + 64*b"\x00" + 128*b"\x00" + b"\x63\x82\x53\x63",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + 16*b"\x00" + 64*b"\x00" + 128*b"\x00" + b"\x63\x82\x53\x63" + b"\x00\x11",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + 16*b"\x00" + 64*b"\x00" + 128*b"\x00" + b"\x63\x82\x53\x63" + b"\x11\x01",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + chaddr + 64*b"\x00" + 128*b"\x00" + b"\x63\x82\x53\x63" + b"\x35\x00\xff",
+             b"\x02\x00\x00\x00" + 20*b"\x00" + b"\x7f\x00\x00\x03" + chaddr + 64*b"\x00" + 128*b"\x00" + b"\x63\x82\x53\x63" + b"\x35\x01\x00\xff",
+             1501 * b"\x00"]
     for t in tests:
         sock.sendto(t, addr)
     dev[0].wait_connected()
@@ -1155,7 +1204,7 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     # FILS: DHCP sendto failed: Invalid argument for second DHCP TX in proxy
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     hapd.set("dhcp_server_port", "0")
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
@@ -1169,13 +1218,13 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     # Options in DHCPOFFER
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3",
-                           extra_op="\x00\x11", opt_end=False)
+                           extra_op=b"\x00\x11", opt_end=False)
     sock.sendto(dhcpoffer[2+20+8:], addr)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dev[0].wait_connected()
     dev[0].request("DISCONNECT")
@@ -1184,13 +1233,13 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     # Options in DHCPOFFER (2)
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3",
-                           extra_op="\x11\x01", opt_end=False)
+                           extra_op=b"\x11\x01", opt_end=False)
     sock.sendto(dhcpoffer[2+20+8:], addr)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dev[0].wait_connected()
     dev[0].request("DISCONNECT")
@@ -1199,13 +1248,13 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     # Server ID in DHCPOFFER
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3",
-                           extra_op="\x36\x01\x30")
+                           extra_op=b"\x36\x01\x30")
     sock.sendto(dhcpoffer[2+20+8:], addr)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dev[0].wait_connected()
     dev[0].request("DISCONNECT")
@@ -1215,16 +1264,16 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     dev[0].request("FILS_HLP_REQ_FLUSH")
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr(),
-                          extra_op="\x00\x11", opt_end=False)
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc)):
+                          extra_op=b"\x00\x11", opt_end=False)
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3",
-                           extra_op="\x36\x01\x30")
+                           extra_op=b"\x36\x01\x30")
     sock.sendto(dhcpoffer[2+20+8:], addr)
     dev[0].wait_connected()
     dev[0].request("DISCONNECT")
@@ -1234,16 +1283,16 @@ def test_fils_sk_hlp_dhcp_parsing(dev, apdev, params):
     dev[0].request("FILS_HLP_REQ_FLUSH")
     dhcpdisc = build_dhcp(req=True, dhcp_msg=DHCPDISCOVER,
                           chaddr=dev[0].own_addr(),
-                          extra_op="\x11\x01", opt_end=False)
-    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc)):
+                          extra_op=b"\x11\x01", opt_end=False)
+    if "OK" not in dev[0].request("FILS_HLP_REQ_ADD " + "ff:ff:ff:ff:ff:ff " + binascii.hexlify(dhcpdisc).decode()):
         raise Exception("FILS_HLP_REQ_ADD failed")
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
-    (msg,addr) = sock.recvfrom(1000)
+    (msg, addr) = sock.recvfrom(1000)
     logger.debug("Received DHCP message from %s" % str(addr))
     dhcpoffer = build_dhcp(req=False, dhcp_msg=DHCPOFFER, rapid_commit=False,
                            chaddr=dev[0].own_addr(), giaddr="127.0.0.3",
-                           extra_op="\x36\x01\x30")
+                           extra_op=b"\x36\x01\x30")
     sock.sendto(dhcpoffer[2+20+8:], addr)
     dev[0].wait_connected()
     dev[0].request("DISCONNECT")
@@ -1256,7 +1305,7 @@ def test_fils_sk_erp_and_reauth(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1295,8 +1344,8 @@ def test_fils_sk_erp_sim(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    realm='wlan.mnc001.mcc232.3gppnetwork.org'
-    start_erp_as(apdev[1], erp_domain=realm,
+    realm = 'wlan.mnc001.mcc232.3gppnetwork.org'
+    start_erp_as(erp_domain=realm,
                  msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
@@ -1370,14 +1419,14 @@ def run_fils_sk_pfs(dev, apdev, group, params):
     check_erp_capa(dev[0])
 
     tls = dev[0].request("GET tls_library")
-    if int(group) in [ 25 ]:
+    if int(group) in [25]:
         if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls)):
             raise HwsimSkip("EC group not supported")
-    if int(group) in [ 27, 28, 29, 30 ]:
+    if int(group) in [27, 28, 29, 30]:
         if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls)):
             raise HwsimSkip("Brainpool EC group not supported")
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1417,7 +1466,7 @@ def test_fils_sk_pfs_group_mismatch(dev, apdev, params):
     check_fils_sk_pfs_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1453,7 +1502,7 @@ def test_fils_sk_pfs_pmksa_caching(dev, apdev, params):
     check_fils_sk_pfs_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1560,7 +1609,7 @@ def test_fils_sk_auth_mismatch(dev, apdev, params):
     check_fils_sk_pfs_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1581,6 +1630,7 @@ def test_fils_sk_auth_mismatch(dev, apdev, params):
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected()
 
+    hapd.dump_monitor()
     dev[0].dump_monitor()
     dev[0].select_network(id, freq=2412)
     ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
@@ -1591,14 +1641,15 @@ def test_fils_sk_auth_mismatch(dev, apdev, params):
     if "CTRL-EVENT-EAP-STARTED" not in ev:
         raise Exception("No EAP exchange seen")
     dev[0].wait_connected()
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(dev[0], hapd)
 
-def test_fils_auth_gtk_rekey(dev, apdev, params):
-    """GTK rekeying after FILS authentication"""
+def setup_fils_rekey(dev, apdev, params, wpa_ptk_rekey=0, wpa_group_rekey=0,
+                     pmksa_caching=True, ext_key_id=False):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1606,7 +1657,14 @@ def test_fils_auth_gtk_rekey(dev, apdev, params):
     params['auth_server_port'] = "18128"
     params['erp_domain'] = 'example.com'
     params['fils_realm'] = 'example.com'
-    params['wpa_group_rekey'] = '1'
+    if wpa_ptk_rekey:
+        params['wpa_ptk_rekey'] = str(wpa_ptk_rekey)
+    if wpa_group_rekey:
+        params['wpa_group_rekey'] = str(wpa_group_rekey)
+    if not pmksa_caching:
+            params['disable_pmksa_caching'] = '1'
+    if ext_key_id:
+        params['extended_key_id'] = '1'
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
 
     dev[0].scan_for_bss(bssid, freq=2412)
@@ -1624,12 +1682,17 @@ def test_fils_auth_gtk_rekey(dev, apdev, params):
     ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
                             "CTRL-EVENT-CONNECTED"], timeout=10)
     if ev is None:
-        raise Exception("Connection using PMKSA caching timed out")
+        raise Exception("Connection using ERP or PMKSA caching timed out")
     if "CTRL-EVENT-EAP-STARTED" in ev:
         raise Exception("Unexpected EAP exchange")
     dev[0].dump_monitor()
 
     hwsim_utils.test_connectivity(dev[0], hapd)
+    return hapd
+
+def test_fils_auth_gtk_rekey(dev, apdev, params):
+    """GTK rekeying after FILS authentication"""
+    hapd = setup_fils_rekey(dev, apdev, params, wpa_group_rekey=1)
     ev = dev[0].wait_event(["WPA: Group rekeying completed"], timeout=2)
     if ev is None:
         raise Exception("GTK rekey timed out")
@@ -1640,13 +1703,39 @@ def test_fils_auth_gtk_rekey(dev, apdev, params):
         raise Exception("Rekeying failed - disconnected")
     hwsim_utils.test_connectivity(dev[0], hapd)
 
+def test_fils_auth_ptk_rekey_ap(dev, apdev, params):
+    """PTK rekeying after FILS authentication triggered by AP"""
+    hapd = setup_fils_rekey(dev, apdev, params, wpa_ptk_rekey=2)
+    ev = dev[0].wait_event(["WPA: Key negotiation completed"], timeout=3)
+    if ev is None:
+        raise Exception("PTK rekey timed out")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
+    ev = dev[0].wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Rekeying failed - disconnected")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
+def test_fils_auth_ptk_rekey_ap_erp(dev, apdev, params):
+    """PTK rekeying after FILS authentication triggered by AP (ERP)"""
+    hapd = setup_fils_rekey(dev, apdev, params, wpa_ptk_rekey=2,
+                            pmksa_caching=False)
+    ev = dev[0].wait_event(["WPA: Key negotiation completed"], timeout=3)
+    if ev is None:
+        raise Exception("PTK rekey timed out")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
+    ev = dev[0].wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Rekeying failed - disconnected")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
 def test_fils_and_ft(dev, apdev, params):
     """FILS SK using ERP and FT initial mobility domain association"""
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    er = start_erp_as(apdev[1],
-                      msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    er = start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1683,7 +1772,7 @@ def test_fils_and_ft(dev, apdev, params):
     params["reassociation_deadline"] = "1000"
     params['nas_identifier'] = "nas1.w1.fi"
     params['r1_key_holder'] = "000102030405"
-    params['r0kh'] = [ "02:00:00:00:04:00 nas2.w1.fi 300102030405060708090a0b0c0d0e0f" ]
+    params['r0kh'] = ["02:00:00:00:04:00 nas2.w1.fi 300102030405060708090a0b0c0d0e0f"]
     params['r1kh'] = "02:00:00:00:04:00 00:01:02:03:04:06 200102030405060708090a0b0c0d0e0f"
     params['ieee80211w'] = "1"
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
@@ -1720,7 +1809,7 @@ def test_fils_and_ft(dev, apdev, params):
     params['wpa_key_mgmt'] = "FT-EAP"
     params['nas_identifier'] = "nas2.w1.fi"
     params['r1_key_holder'] = "000102030406"
-    params['r0kh'] = [ "02:00:00:00:03:00 nas1.w1.fi 200102030405060708090a0b0c0d0e0f" ]
+    params['r0kh'] = ["02:00:00:00:03:00 nas1.w1.fi 200102030405060708090a0b0c0d0e0f"]
     params['r1kh'] = "02:00:00:00:03:00 00:01:02:03:04:05 300102030405060708090a0b0c0d0e0f"
     hapd2 = hostapd.add_ap(apdev[1]['ifname'], params)
 
@@ -1739,6 +1828,10 @@ def test_fils_and_ft_over_air_sha384(dev, apdev, params):
 
 def run_fils_and_ft_over_air(dev, apdev, params, key_mgmt):
     hapd, hapd2 = run_fils_and_ft_setup(dev, apdev, params, key_mgmt)
+    conf = hapd.request("GET_CONFIG")
+    if "key_mgmt=" + key_mgmt not in conf.splitlines():
+        logger.info("GET_CONFIG:\n" + conf)
+        raise Exception("GET_CONFIG did not report correct key_mgmt")
 
     logger.info("FT protocol using FT key hierarchy established during FILS authentication")
     dev[0].scan_for_bss(apdev[1]['bssid'], freq="2412", force_scan=True)
@@ -1789,8 +1882,7 @@ def run_fils_and_ft_setup(dev, apdev, params, key_mgmt):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    er = start_erp_as(apdev[1],
-                      msk_dump=os.path.join(params['logdir'], "msk.lst"))
+    er = start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     logger.info("Set up ERP key hierarchy without FILS/FT authentication")
     bssid = apdev[0]['bssid']
@@ -1810,6 +1902,7 @@ def run_fils_and_ft_setup(dev, apdev, params, key_mgmt):
                         eap="PSK", identity="psk.user@example.com",
                         password_hex="0123456789abcdef0123456789abcdef",
                         erp="1", scan_freq="2412")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(dev[0], hapd)
 
     dev[0].request("DISCONNECT")
@@ -1832,8 +1925,8 @@ def run_fils_and_ft_setup(dev, apdev, params, key_mgmt):
     params["reassociation_deadline"] = "1000"
     params['nas_identifier'] = "nas1.w1.fi"
     params['r1_key_holder'] = "000102030405"
-    params['r0kh'] = [ "02:00:00:00:03:00 nas1.w1.fi 100102030405060708090a0b0c0d0e0f100102030405060708090a0b0c0d0e0f",
-                       "02:00:00:00:04:00 nas2.w1.fi 300102030405060708090a0b0c0d0e0f" ]
+    params['r0kh'] = ["02:00:00:00:03:00 nas1.w1.fi 100102030405060708090a0b0c0d0e0f100102030405060708090a0b0c0d0e0f",
+                      "02:00:00:00:04:00 nas2.w1.fi 300102030405060708090a0b0c0d0e0f"]
     params['r1kh'] = "02:00:00:00:04:00 00:01:02:03:04:06 200102030405060708090a0b0c0d0e0f"
     params['ieee80211w'] = "2"
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
@@ -1856,6 +1949,7 @@ def run_fils_and_ft_setup(dev, apdev, params, key_mgmt):
         raise Exception("Authentication failed")
     if "EVENT-ASSOC-REJECT" in ev:
         raise Exception("Association failed")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity(dev[0], hapd)
 
     er.disable()
@@ -1863,8 +1957,8 @@ def run_fils_and_ft_setup(dev, apdev, params, key_mgmt):
     params['wpa_key_mgmt'] = key_mgmt
     params['nas_identifier'] = "nas2.w1.fi"
     params['r1_key_holder'] = "000102030406"
-    params['r0kh'] = [ "02:00:00:00:03:00 nas1.w1.fi 200102030405060708090a0b0c0d0e0f",
-                       "02:00:00:00:04:00 nas2.w1.fi 000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f" ]
+    params['r0kh'] = ["02:00:00:00:03:00 nas1.w1.fi 200102030405060708090a0b0c0d0e0f",
+                      "02:00:00:00:04:00 nas2.w1.fi 000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f"]
     params['r1kh'] = "02:00:00:00:03:00 00:01:02:03:04:05 300102030405060708090a0b0c0d0e0f"
     hapd2 = hostapd.add_ap(apdev[1]['ifname'], params)
 
@@ -1876,7 +1970,7 @@ def test_fils_assoc_replay(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    start_erp_as(apdev[1])
+    start_erp_as()
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -1906,7 +2000,7 @@ def test_fils_assoc_replay(dev, apdev, params):
         req = hapd.mgmt_rx()
         count += 1
         hapd.dump_monitor()
-        hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']))
+        hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
         if req['subtype'] == 0:
             assocreq = req
             ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=5)
@@ -1928,7 +2022,7 @@ def test_fils_assoc_replay(dev, apdev, params):
     logger.info("Replay the last Association Request frame")
     hapd.dump_monitor()
     hapd.set("ext_mgmt_frame_handling", "1")
-    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']))
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
     ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=5)
     if ev is None:
         raise Exception("No TX status seen")
@@ -1948,7 +2042,7 @@ def test_fils_assoc_replay(dev, apdev, params):
     filt = "wlan.fc.type == 2 && " + \
            "wlan.da == " + sta + " && " + \
            "wlan.sa == " + ap + " && wlan.ccmp.extiv"
-    fields = [ "wlan.ccmp.extiv" ]
+    fields = ["wlan.ccmp.extiv"]
     res = run_tshark(capfile, filt, fields)
     vals = res.splitlines()
     logger.info("CCMP PN: " + str(vals))
@@ -1965,8 +2059,7 @@ def test_fils_sk_erp_server_flush(dev, apdev, params):
     check_fils_capa(dev[0])
     check_erp_capa(dev[0])
 
-    hapd_as = start_erp_as(apdev[1], msk_dump=os.path.join(params['logdir'],
-                                                           "msk.lst"))
+    hapd_as = start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
     bssid = apdev[0]['bssid']
     params = hostapd.wpa2_eap_params(ssid="fils")
@@ -2039,3 +2132,329 @@ def test_fils_sk_erp_server_flush(dev, apdev, params):
         raise Exception("Association failed with new ERP keys")
     if "CTRL-EVENT-EAP-STARTED" in ev:
         raise Exception("Unexpected EAP exchange")
+
+def test_fils_sk_erp_radius_ext(dev, apdev, params):
+    """FILS SK using ERP and external RADIUS server"""
+    as_hapd = hostapd.Hostapd("as")
+    try:
+        as_hapd.disable()
+        as_hapd.set("eap_server_erp", "1")
+        as_hapd.set("erp_domain", "erp.example.com")
+        as_hapd.enable()
+        run_fils_sk_erp_radius_ext(dev, apdev, params)
+    finally:
+        as_hapd.disable()
+        as_hapd.set("eap_server_erp", "0")
+        as_hapd.set("erp_domain", "")
+        as_hapd.enable()
+
+def run_fils_sk_erp_radius_ext(dev, apdev, params):
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['erp_domain'] = 'erp.example.com'
+    params['fils_realm'] = 'erp.example.com'
+    params['disable_pmksa_caching'] = '1'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
+                        eap="PWD", identity="pwd@erp.example.com",
+                        password="secret password",
+                        erp="1", scan_freq="2412")
+
+    dev[0].request("DISCONNECT")
+    dev[0].wait_disconnected()
+
+    dev[0].dump_monitor()
+    dev[0].select_network(id, freq=2412)
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "EVENT-ASSOC-REJECT",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using FILS/ERP timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    if "EVENT-ASSOC-REJECT" in ev:
+        raise Exception("Association failed")
+    hwsim_utils.test_connectivity(dev[0], hapd)
+
+def test_fils_sk_erp_radius_roam(dev, apdev):
+    """FILS SK/ERP and roaming with different AKM"""
+    as_hapd = hostapd.Hostapd("as")
+    try:
+        as_hapd.disable()
+        as_hapd.set("eap_server_erp", "1")
+        as_hapd.set("erp_domain", "example.com")
+        as_hapd.enable()
+        run_fils_sk_erp_radius_roam(dev, apdev)
+    finally:
+        as_hapd.disable()
+        as_hapd.set("eap_server_erp", "0")
+        as_hapd.set("erp_domain", "")
+        as_hapd.enable()
+
+def run_fils_sk_erp_radius_roam(dev, apdev):
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['disable_pmksa_caching'] = '1'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256 FILS-SHA384",
+                        eap="PWD", identity="erp-pwd@example.com",
+                        password="secret password",
+                        erp="1", scan_freq="2412")
+
+    bssid2 = apdev[1]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA384"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['disable_pmksa_caching'] = '1'
+    hapd2 = hostapd.add_ap(apdev[1]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid2, freq=2412)
+
+    dev[0].dump_monitor()
+    if "OK" not in dev[0].request("ROAM " + bssid2):
+        raise Exception("ROAM failed")
+
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using PMKSA caching timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    if bssid2 not in ev:
+        raise Exception("Failed to connect to the second AP")
+
+    hapd2.wait_sta()
+    hwsim_utils.test_connectivity(dev[0], hapd2)
+
+def test_fils_sk_erp_roam_diff_akm(dev, apdev, params):
+    """FILS SK using ERP and SHA256/SHA384 change in roam"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    start_erp_as()
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['auth_server_port'] = "18128"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256 FILS-SHA384",
+                        eap="PSK", identity="psk.user@example.com",
+                        password_hex="0123456789abcdef0123456789abcdef",
+                        erp="1", scan_freq="2412")
+    dev[0].request("DISCONNECT")
+    dev[0].wait_disconnected()
+    dev[0].request("RECONNECT")
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using FILS timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+
+    bssid2 = apdev[1]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256 FILS-SHA384"
+    params['auth_server_port'] = "18128"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    hapd2 = hostapd.add_ap(apdev[1]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid2, freq=2412)
+
+    dev[0].dump_monitor()
+    if "OK" not in dev[0].request("ROAM " + bssid2):
+        raise Exception("ROAM failed")
+
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Roaming using FILS timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    if bssid2 not in ev:
+        raise Exception("Failed to connect to the second AP")
+
+    hwsim_utils.test_connectivity(dev[0], hapd2)
+
+def test_fils_auth_ptk_rekey_ap_ext_key_id(dev, apdev, params):
+    """PTK rekeying after FILS authentication triggered by AP (Ext Key ID)"""
+    check_ext_key_id_capa(dev[0])
+    try:
+        dev[0].set("extended_key_id", "1")
+        hapd = setup_fils_rekey(dev, apdev, params, wpa_ptk_rekey=2,
+                                ext_key_id=True)
+        check_ext_key_id_capa(hapd)
+        idx = int(dev[0].request("GET last_tk_key_idx"))
+        if idx != 0:
+            raise Exception("Unexpected Key ID before TK rekey: %d" % idx)
+        ev = dev[0].wait_event(["WPA: Key negotiation completed"], timeout=3)
+        if ev is None:
+            raise Exception("PTK rekey timed out")
+        idx = int(dev[0].request("GET last_tk_key_idx"))
+        if idx != 1:
+            raise Exception("Unexpected Key ID after TK rekey: %d" % idx)
+        hwsim_utils.test_connectivity(dev[0], hapd)
+
+        ev = dev[0].wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=1)
+        if ev is not None:
+            raise Exception("Rekeying failed - disconnected")
+        hwsim_utils.test_connectivity(dev[0], hapd)
+    finally:
+        dev[0].set("extended_key_id", "0")
+
+def test_fils_discovery_frame(dev, apdev, params):
+    """FILS Discovery frame generation"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['auth_server_port'] = "18128"
+    params['erp_send_reauth_start'] = '1'
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['wpa_group_rekey'] = '1'
+    params['fils_discovery_min_interval'] = '20'
+    params['fils_discovery_max_interval'] = '20'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params, no_enable=True)
+
+    if "OK" not in hapd.request("ENABLE"):
+        raise HwsimSkip("FILS Discovery frame transmission not supported")
+
+    ev = hapd.wait_event(["AP-ENABLED", "AP-DISABLED"], timeout=5)
+    if ev is None:
+        raise Exception("AP startup timed out")
+    if "AP-ENABLED" not in ev:
+        raise Exception("AP startup failed")
+
+    dev[0].request("ERP_FLUSH")
+    dev[0].connect("fils", key_mgmt="FILS-SHA256",
+                   eap="PSK", identity="psk.user@example.com",
+                   password_hex="0123456789abcdef0123456789abcdef",
+                   erp="1", scan_freq="2412")
+
+def test_fils_offload_to_driver(dev, apdev, params):
+    """FILS offload to driver"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+    run_fils_offload_to_driver(dev[0], apdev, params)
+
+def test_fils_offload_to_driver2(dev, apdev, params):
+    """FILS offload to driver"""
+    wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+    wpas.interface_add("wlan5", drv_params="force_connect_cmd=1")
+    run_fils_offload_to_driver(wpas, apdev, params)
+
+def run_fils_offload_to_driver(dev, apdev, params):
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['auth_server_port'] = "18128"
+    params['erp_send_reauth_start'] = '1'
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['disable_pmksa_caching'] = '1'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev.request("ERP_FLUSH")
+    id = dev.connect("fils", key_mgmt="FILS-SHA256",
+                     eap="PSK", identity="psk.user@example.com",
+                     password_hex="0123456789abcdef0123456789abcdef",
+                     erp="1", scan_freq="2412")
+
+    p = "freq=2412 authorized=1 fils_erp_next_seq_num=4"
+    if "OK" not in dev.request("DRIVER_EVENT ASSOC " + p):
+        raise Exception("DRIVER_EVENT ASSOC did not succeed")
+    dev.wait_connected()
+
+    dev.request("DISCONNECT")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+
+    dev.select_network(id, freq=2412)
+    dev.wait_connected()
+    dev.dump_monitor()
+
+    # This does not really work properly with SME-in-wpa_supplicant case
+    p = "freq=2412 authorized=1 fils_erp_next_seq_num=4"
+    if "OK" not in dev.request("DRIVER_EVENT ASSOC " + p):
+        raise Exception("DRIVER_EVENT ASSOC did not succeed")
+
+    dev.wait_connected()
+
+def test_fils_sk_okc(dev, apdev, params):
+    """FILS SK and opportunistic key caching"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['okc'] = '1'
+    params['auth_server_port'] = "18128"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
+                        eap="PSK", identity="psk.user@example.com",
+                        password_hex="0123456789abcdef0123456789abcdef",
+                        erp="1", okc=True, scan_freq="2412")
+    pmksa = dev[0].get_pmksa(bssid)
+    if pmksa is None:
+        raise Exception("No PMKSA cache entry created")
+    hapd.wait_sta()
+
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    bssid2 = hapd2.own_addr()
+
+    dev[0].scan_for_bss(bssid2, freq=2412)
+    if "OK" not in dev[0].request("ROAM " + bssid2):
+        raise Exception("ROAM failed")
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using OKC/PMKSA caching timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    hapd2.wait_sta()
+    hwsim_utils.test_connectivity(dev[0], hapd2)
+    pmksa2 = dev[0].get_pmksa(bssid2)
+    if pmksa2 is None:
+        raise Exception("No PMKSA cache entry found")
+    if 'opportunistic' not in pmksa2 or pmksa2['opportunistic'] != '1':
+        raise Exception("OKC not indicated in PMKSA entry")
+    if pmksa['pmkid'] != pmksa2['pmkid']:
+        raise Exception("Unexpected PMKID change")

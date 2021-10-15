@@ -211,7 +211,7 @@ static struct wpabuf * eap_eke_build_fail(struct eap_eke_data *data,
 	eap_eke_state(data, FAILURE);
 	ret->methodState = METHOD_DONE;
 	ret->decision = DECISION_FAIL;
-	ret->allowNotifications = FALSE;
+	ret->allowNotifications = false;
 
 	return resp;
 }
@@ -414,7 +414,7 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 	 */
 	if (eap_eke_dh_init(data->sess.dhgroup, data->dh_priv, pub) < 0) {
 		wpa_printf(MSG_INFO, "EAP-EKE: Failed to initialize DH");
-		os_memset(key, 0, sizeof(key));
+		forced_memzero(key, sizeof(key));
 		return eap_eke_build_fail(data, ret, id,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
@@ -422,7 +422,7 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 	if (eap_eke_shared_secret(&data->sess, key, data->dh_priv, dhcomp) < 0)
 	{
 		wpa_printf(MSG_INFO, "EAP-EKE: Failed to derive shared secret");
-		os_memset(key, 0, sizeof(key));
+		forced_memzero(key, sizeof(key));
 		return eap_eke_build_fail(data, ret, id,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
@@ -431,7 +431,7 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 				 data->serverid, data->serverid_len,
 				 data->peerid, data->peerid_len) < 0) {
 		wpa_printf(MSG_INFO, "EAP-EKE: Failed to derive Ke/Ki");
-		os_memset(key, 0, sizeof(key));
+		forced_memzero(key, sizeof(key));
 		return eap_eke_build_fail(data, ret, id,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
@@ -442,7 +442,7 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 				 data->sess.dhcomp_len + data->sess.pnonce_len,
 				 EAP_EKE_COMMIT);
 	if (resp == NULL) {
-		os_memset(key, 0, sizeof(key));
+		forced_memzero(key, sizeof(key));
 		return eap_eke_build_fail(data, ret, id,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
@@ -452,11 +452,11 @@ static struct wpabuf * eap_eke_process_commit(struct eap_sm *sm,
 	if (eap_eke_dhcomp(&data->sess, key, pub, rpos) < 0) {
 		wpabuf_free(resp);
 		wpa_printf(MSG_INFO, "EAP-EKE: Failed to build DHComponent_P");
-		os_memset(key, 0, sizeof(key));
+		forced_memzero(key, sizeof(key));
 		return eap_eke_build_fail(data, ret, id,
 					  EAP_EKE_FAIL_PRIVATE_INTERNAL_ERROR);
 	}
-	os_memset(key, 0, sizeof(key));
+	forced_memzero(key, sizeof(key));
 
 	wpa_hexdump(MSG_DEBUG, "EAP-EKE: DHComponent_P",
 		    rpos, data->sess.dhcomp_len);
@@ -617,7 +617,7 @@ static struct wpabuf * eap_eke_process_confirm(struct eap_eke_data *data,
 	eap_eke_state(data, SUCCESS);
 	ret->methodState = METHOD_MAY_CONT;
 	ret->decision = DECISION_COND_SUCC;
-	ret->allowNotifications = FALSE;
+	ret->allowNotifications = false;
 
 	return resp;
 }
@@ -656,7 +656,7 @@ static struct wpabuf * eap_eke_process(struct eap_sm *sm, void *priv,
 
 	pos = eap_hdr_validate(EAP_VENDOR_IETF, EAP_TYPE_EKE, reqData, &len);
 	if (pos == NULL || len < 1) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
@@ -666,10 +666,10 @@ static struct wpabuf * eap_eke_process(struct eap_sm *sm, void *priv,
 	wpa_printf(MSG_DEBUG, "EAP-EKE: Received frame: exch %d", eke_exch);
 	wpa_hexdump(MSG_DEBUG, "EAP-EKE: Received Data", pos, end - pos);
 
-	ret->ignore = FALSE;
+	ret->ignore = false;
 	ret->methodState = METHOD_MAY_CONT;
 	ret->decision = DECISION_FAIL;
-	ret->allowNotifications = TRUE;
+	ret->allowNotifications = true;
 
 	switch (eke_exch) {
 	case EAP_EKE_ID:
@@ -689,18 +689,18 @@ static struct wpabuf * eap_eke_process(struct eap_sm *sm, void *priv,
 		break;
 	default:
 		wpa_printf(MSG_DEBUG, "EAP-EKE: Ignoring message with unknown EKE-Exch %d", eke_exch);
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
 	if (ret->methodState == METHOD_DONE)
-		ret->allowNotifications = FALSE;
+		ret->allowNotifications = false;
 
 	return resp;
 }
 
 
-static Boolean eap_eke_isKeyAvailable(struct eap_sm *sm, void *priv)
+static bool eap_eke_isKeyAvailable(struct eap_sm *sm, void *priv)
 {
 	struct eap_eke_data *data = priv;
 	return data->state == SUCCESS;

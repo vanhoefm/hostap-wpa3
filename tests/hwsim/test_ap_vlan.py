@@ -26,9 +26,11 @@ from tshark import run_tshark
 
 def test_ap_vlan_open(dev, apdev):
     """AP VLAN with open network"""
-    params = { "ssid": "test-vlan-open",
-               "dynamic_vlan": "1",
-               "accept_mac_file": "hostapd.accept" }
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
+    params = {"ssid": "test-vlan-open",
+              "dynamic_vlan": "1",
+              "accept_mac_file": filename}
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
@@ -37,13 +39,17 @@ def test_ap_vlan_open(dev, apdev):
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
     hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
     hwsim_utils.test_connectivity(dev[2], hapd)
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
 
 def test_ap_vlan_file_open(dev, apdev):
     """AP VLAN with open network and vlan_file mapping"""
-    params = { "ssid": "test-vlan-open",
-               "dynamic_vlan": "1",
-               "vlan_file": "hostapd.vlan",
-               "accept_mac_file": "hostapd.accept" }
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
+    params = {"ssid": "test-vlan-open",
+              "dynamic_vlan": "1",
+              "vlan_file": "hostapd.vlan",
+              "accept_mac_file": filename}
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
@@ -52,16 +58,38 @@ def test_ap_vlan_file_open(dev, apdev):
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
     hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
     hwsim_utils.test_connectivity(dev[2], hapd)
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
+
+def test_ap_vlan_file_open2(dev, apdev):
+    """AP VLAN with open network and vlan_file mapping (2)"""
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept2')
+    hostapd.send_file(apdev[0], filename, filename)
+    params = {"ssid": "test-vlan-open",
+              "dynamic_vlan": "1",
+              "vlan_file": "hostapd.vlan2",
+              "accept_mac_file": filename}
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
+    dev[1].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
+    dev[2].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
+    hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
+    hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
+    hwsim_utils.test_connectivity_iface(dev[2], hapd, "hwsimbr3")
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
 
 def test_ap_vlan_file_parsing(dev, apdev, params):
     """hostapd vlan_file/mac_file parsing"""
     tmp = os.path.join(params['logdir'], 'ap_vlan_file_parsing.tmp')
-    params = { "ssid": "test-vlan-open", "dynamic_vlan": "1" }
+    params = {"ssid": "test-vlan-open", "dynamic_vlan": "1"}
     hapd = hostapd.add_ap(apdev[0], params)
 
-    tests = [ "#\n\n0\t11\n",
-              "* ",
-              "1 netdev12345678901234567890" ]
+    tests = ["#\n\n0\t11\n",
+             "1  netdev  br\n1",
+             "* ",
+             "1 netdev12345678901234567890"]
     for t in tests:
         with open(tmp, "w") as f:
             f.write(t)
@@ -74,11 +102,11 @@ def test_ap_vlan_file_parsing(dev, apdev, params):
         if "FAIL" not in hapd.request("SET vlan_file " + tmp):
             raise Exception("vlan_file accepted during OOM")
 
-    tests = [ "#\n\n0\tvlan\n",
-              "4095\tvlan\n",
-              "vlan\n",
-              "1\t1234567890abcdef1234567890\n",
-              "1\n" ]
+    tests = ["#\n\n0\tvlan\n",
+             "4095\tvlan\n",
+             "vlan\n",
+             "1\t1234567890abcdef1234567890\n",
+             "1\n"]
     for t in tests:
         with open(tmp, "w") as f:
             f.write(t)
@@ -93,18 +121,25 @@ def test_ap_vlan_file_parsing(dev, apdev, params):
 
 def test_ap_vlan_wpa2(dev, apdev):
     """AP VLAN with WPA2-PSK"""
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
     params = hostapd.wpa2_params(ssid="test-vlan",
                                  passphrase="12345678")
     params['dynamic_vlan'] = "1"
-    params['accept_mac_file'] = "hostapd.accept"
+    params['accept_mac_file'] = filename
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan", psk="12345678", scan_freq="2412")
     dev[1].connect("test-vlan", psk="12345678", scan_freq="2412")
     dev[2].connect("test-vlan", psk="12345678", scan_freq="2412")
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hapd.wait_sta()
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
     hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
     hwsim_utils.test_connectivity(dev[2], hapd)
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
 
 def test_ap_vlan_wpa2_radius(dev, apdev):
     """AP VLAN with WPA2-Enterprise and RADIUS attributes"""
@@ -124,6 +159,9 @@ def test_ap_vlan_wpa2_radius(dev, apdev):
                    identity="pax.user@example.com",
                    password_hex="0123456789abcdef0123456789abcdef",
                    scan_freq="2412")
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hapd.wait_sta()
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
     hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
     hwsim_utils.test_connectivity(dev[2], hapd)
@@ -139,7 +177,40 @@ def test_ap_vlan_wpa2_radius_2(dev, apdev):
                    password_hex="0123456789abcdef0123456789abcdef",
                    scan_freq="2412")
 
+    hapd.wait_sta()
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
+
+def test_ap_vlan_wpa2_radius_local(dev, apdev):
+    """AP VLAN with WPA2-Enterprise and local file setting VLAN IDs"""
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
+    params = hostapd.wpa2_eap_params(ssid="test-vlan")
+    params['dynamic_vlan'] = "0"
+    params['vlan_file'] = "hostapd.vlan"
+    params['vlan_bridge'] = "test_br_vlan"
+    params['accept_mac_file'] = filename
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].connect("test-vlan", key_mgmt="WPA-EAP", eap="PAX",
+                   identity="pax.user@example.com",
+                   password_hex="0123456789abcdef0123456789abcdef",
+                   scan_freq="2412")
+    dev[1].connect("test-vlan", key_mgmt="WPA-EAP", eap="PAX",
+                   identity="pax.user@example.com",
+                   password_hex="0123456789abcdef0123456789abcdef",
+                   scan_freq="2412")
+    dev[2].connect("test-vlan", key_mgmt="WPA-EAP", eap="PAX",
+                   identity="pax.user@example.com",
+                   password_hex="0123456789abcdef0123456789abcdef",
+                   scan_freq="2412")
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hwsim_utils.test_connectivity_iface(dev[0], hapd, "test_br_vlan1")
+    hwsim_utils.test_connectivity_iface(dev[1], hapd, "test_br_vlan2")
+    hwsim_utils.test_connectivity(dev[2], hapd)
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
 
 def test_ap_vlan_wpa2_radius_id_change(dev, apdev):
     """AP VLAN with WPA2-Enterprise and RADIUS attributes changing VLANID"""
@@ -167,15 +238,15 @@ def test_ap_vlan_tagged_wpa2_radius_id_change(dev, apdev):
         subprocess.call(['ip', 'link', 'del', ifname2])
 
 def generic_ap_vlan_wpa2_radius_id_change(dev, apdev, tagged):
-    as_params = { "ssid": "as",
-                  "beacon_int": "2000",
-                  "radius_server_clients": "auth_serv/radius_clients.conf",
-                  "radius_server_auth_port": '18128',
-                  "eap_server": "1",
-                  "eap_user_file": "auth_serv/eap_user.conf",
-                  "ca_cert": "auth_serv/ca.pem",
-                  "server_cert": "auth_serv/server.pem",
-                  "private_key": "auth_serv/server.key" }
+    as_params = {"ssid": "as",
+                 "beacon_int": "2000",
+                 "radius_server_clients": "auth_serv/radius_clients.conf",
+                 "radius_server_auth_port": '18128',
+                 "eap_server": "1",
+                 "eap_user_file": "auth_serv/eap_user.conf",
+                 "ca_cert": "auth_serv/ca.pem",
+                 "server_cert": "auth_serv/server.pem",
+                 "private_key": "auth_serv/server.key"}
     authserv = hostapd.add_ap(apdev[1], as_params)
 
     params = hostapd.wpa2_eap_params(ssid="test-vlan")
@@ -189,6 +260,7 @@ def generic_ap_vlan_wpa2_radius_id_change(dev, apdev, tagged):
                    identity=identity,
                    password_hex="0123456789abcdef0123456789abcdef",
                    scan_freq="2412")
+    hapd.wait_sta()
     if tagged:
         hwsim_utils.run_connectivity_test(dev[0], hapd, 0, ifname1="wlan0.1",
                                           ifname2="brvlan1")
@@ -254,7 +326,7 @@ def generic_ap_vlan_wpa2_radius_id_change(dev, apdev, tagged):
                                               ifname2="brvlan1")
         else:
             hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
-    except Exception, e:
+    except Exception as e:
         # It is possible for new bridge setup to not be ready immediately, so
         # try again to avoid reporting issues related to that.
         logger.info("First VLAN-ID 1 data test failed - try again")
@@ -288,10 +360,12 @@ def test_ap_vlan_wpa2_radius_required(dev, apdev):
 
 def test_ap_vlan_tagged(dev, apdev):
     """AP VLAN with tagged interface"""
-    params = { "ssid": "test-vlan-open",
-               "dynamic_vlan": "1",
-               "vlan_tagged_interface": "lo",
-               "accept_mac_file": "hostapd.accept" }
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
+    params = {"ssid": "test-vlan-open",
+              "dynamic_vlan": "1",
+              "vlan_tagged_interface": "lo",
+              "accept_mac_file": filename}
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
@@ -300,43 +374,45 @@ def test_ap_vlan_tagged(dev, apdev):
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brlo.1")
     hwsim_utils.test_connectivity_iface(dev[1], hapd, "brlo.2")
     hwsim_utils.test_connectivity(dev[2], hapd)
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
 
 def ap_vlan_iface_cleanup_multibss_cleanup():
-    subprocess.call(['ifconfig', 'dummy0', 'down'],
+    subprocess.call(['ifconfig', 'stub0', 'down'],
                     stderr=open('/dev/null', 'w'))
-    ifnames = [ 'wlan3.1', 'wlan3.2', 'wlan3-2.1', 'wlan3-2.2', 'dummy0.2',
-                'dummy0.1', 'dummy0', 'brvlan1', 'brvlan2' ]
+    ifnames = ['wlan3.1', 'wlan3.2', 'wlan3-2.1', 'wlan3-2.2', 'stub0.2',
+               'stub0.1', 'stub0', 'brvlan1', 'brvlan2']
     for ifname in ifnames:
         subprocess.call(['ip', 'link', 'del', ifname],
                         stderr=open('/dev/null', 'w'))
 
 def ap_vlan_iface_test_and_prepare_environ():
     ifaces = netifaces.interfaces()
-    if "dummy0" in ifaces:
-        raise Exception("dummy0 already exists before")
+    if "stub0" in ifaces:
+        raise Exception("stub0 already exists before")
     ifaces = netifaces.interfaces()
-    if "dummy0.1" in ifaces:
-        raise Exception("dummy0.1 already exists before")
+    if "stub0.1" in ifaces:
+        raise Exception("stub0.1 already exists before")
 
-    subprocess.call(['ip', 'link', 'add', 'dummy0', 'type', 'dummy'])
-    subprocess.call(['ifconfig', 'dummy0', 'up'])
+    subprocess.call(['ip', 'link', 'add', 'stub0', 'type', 'dummy'])
+    subprocess.call(['ifconfig', 'stub0', 'up'])
 
     ifaces = netifaces.interfaces()
-    if not("dummy0" in ifaces):
-        raise HwsimSkip("failed to add dummy0 - missing kernel config DUMMY ?")
+    if "stub0" not in ifaces:
+        raise HwsimSkip("failed to add stub0 - missing kernel config DUMMY ?")
 
-    subprocess.call(['ip', 'link', 'add', 'link', 'dummy0', 'name', 'dummy0.1',
+    subprocess.call(['ip', 'link', 'add', 'link', 'stub0', 'name', 'stub0.1',
                      'type', 'vlan', 'id', '1'])
 
     ifaces = netifaces.interfaces()
-    if not("dummy0.1" in ifaces):
-        raise HwsimSkip("failed to add dummy0.1 - missing kernel config VLAN_8021Q ?")
+    if "stub0.1" not in ifaces:
+        raise HwsimSkip("failed to add stub0.1 - missing kernel config VLAN_8021Q ?")
 
-    subprocess.call(['ip', 'link', 'del', 'dummy0.1'])
+    subprocess.call(['ip', 'link', 'del', 'stub0.1'])
 
     ifaces = netifaces.interfaces()
-    if "dummy0.1" in ifaces:
-        raise Exception("dummy0.1 was not removed before testing")
+    if "stub0.1" in ifaces:
+        raise Exception("stub0.1 was not removed before testing")
 
 def test_ap_vlan_iface_cleanup_multibss(dev, apdev):
     """AP VLAN operation in multi-BSS multi-VLAN case"""
@@ -354,16 +430,16 @@ def ap_vlan_iface_cleanup_multibss(dev, apdev, cfgfile):
         ap_vlan_iface_cleanup_multibss_cleanup()
         ap_vlan_iface_test_and_prepare_environ()
 
-        as_params = { "ssid": "as",
-                      "beacon_int": "2000",
-                      "radius_server_clients": "auth_serv/radius_clients.conf",
-                      "radius_server_auth_port": '18128',
-                      "eap_server": "1",
-                      "eap_user_file": "auth_serv/eap_user.conf",
-                      "ca_cert": "auth_serv/ca.pem",
-                      "server_cert": "auth_serv/server.pem",
-                      "private_key": "auth_serv/server.key",
-                      "vlan_naming": "1" }
+        as_params = {"ssid": "as",
+                     "beacon_int": "2000",
+                     "radius_server_clients": "auth_serv/radius_clients.conf",
+                     "radius_server_auth_port": '18128',
+                     "eap_server": "1",
+                     "eap_user_file": "auth_serv/eap_user.conf",
+                     "ca_cert": "auth_serv/ca.pem",
+                     "server_cert": "auth_serv/server.pem",
+                     "private_key": "auth_serv/server.key",
+                     "vlan_naming": "1"}
         authserv = hostapd.add_ap(apdev[1], as_params)
 
         # start the actual test
@@ -381,23 +457,25 @@ def ap_vlan_iface_cleanup_multibss(dev, apdev, cfgfile):
                        identity="vlan1",
                        password_hex="0123456789abcdef0123456789abcdef",
                        scan_freq="2412")
+        hapd.wait_sta()
 
         ifaces = netifaces.interfaces()
-        if not("brvlan1" in ifaces):
+        if "brvlan1" not in ifaces:
             raise Exception("bridge brvlan1 was not created")
 
         hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
-        if not iface_is_in_bridge("brvlan1", "dummy0.1"):
-            raise Exception("dummy0.1 not in brvlan1")
+        if not iface_is_in_bridge("brvlan1", "stub0.1"):
+            raise Exception("stub0.1 not in brvlan1")
 
         dev[1].connect("bss-2", key_mgmt="WPA-EAP", eap="PAX",
                        identity="vlan1",
                        password_hex="0123456789abcdef0123456789abcdef",
                        scan_freq="2412")
 
+        hapd1.wait_sta()
         hwsim_utils.test_connectivity_iface(dev[1], hapd1, "brvlan1")
-        if not iface_is_in_bridge("brvlan1", "dummy0.1"):
-            raise Exception("dummy0.1 not in brvlan1")
+        if not iface_is_in_bridge("brvlan1", "stub0.1"):
+            raise Exception("stub0.1 not in brvlan1")
 
         authserv.disable()
         authserv.set('eap_user_file', "auth_serv/eap_user_vlan.conf")
@@ -418,19 +496,19 @@ def ap_vlan_iface_cleanup_multibss(dev, apdev, cfgfile):
             raise Exception("Unexpected state after reauth: " + state)
 
         ifaces = netifaces.interfaces()
-        if not ("brvlan1" in ifaces):
+        if "brvlan1" not in ifaces:
             raise Exception("bridge brvlan1 has been removed too early")
 
         hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan2",
                                             max_tries=5)
 
-        if not iface_is_in_bridge("brvlan2", "dummy0.2"):
-            raise Exception("dummy0.2 not in brvlan2")
+        if not iface_is_in_bridge("brvlan2", "stub0.2"):
+            raise Exception("stub0.2 not in brvlan2")
 
         logger.info("test wlan1 == VLAN 1")
         hwsim_utils.test_connectivity_iface(dev[1], hapd1, "brvlan1")
-        if not iface_is_in_bridge("brvlan1", "dummy0.1"):
-            raise Exception("dummy0.1 not in brvlan1")
+        if not iface_is_in_bridge("brvlan1", "stub0.1"):
+            raise Exception("stub0.1 not in brvlan1")
 
         logger.info("wlan1 -> VLAN 2")
 
@@ -452,8 +530,8 @@ def ap_vlan_iface_cleanup_multibss(dev, apdev, cfgfile):
         logger.info("test wlan0 == VLAN 2")
         hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan2")
 
-        if not iface_is_in_bridge("brvlan2", "dummy0.2"):
-            raise Exception("dummy0.2 not in brvlan2")
+        if not iface_is_in_bridge("brvlan2", "stub0.2"):
+            raise Exception("stub0.2 not in brvlan2")
 
         ifaces = netifaces.interfaces()
         if "brvlan1" in ifaces:
@@ -492,6 +570,8 @@ def test_ap_vlan_iface_cleanup_multibss_per_sta_vif(dev, apdev):
 def test_ap_vlan_without_station(dev, apdev, p):
     """AP VLAN with WPA2-PSK and no station"""
     try:
+        filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+        hostapd.send_file(apdev[0], filename, filename)
         subprocess.call(['brctl', 'addbr', 'brvlan1'])
         subprocess.call(['brctl', 'setfd', 'brvlan1', '0'])
         subprocess.call(['ifconfig', 'brvlan1', 'up'])
@@ -501,7 +581,7 @@ def test_ap_vlan_without_station(dev, apdev, p):
                                      passphrase="12345678x")
         params['dynamic_vlan'] = "1"
         params['vlan_file'] = 'hostapd.wlan3.vlan'
-        params['accept_mac_file'] = "hostapd.accept"
+        params['accept_mac_file'] = filename
         hapd = hostapd.add_ap(apdev[0], params)
 
         # inject some traffic
@@ -564,6 +644,8 @@ def test_ap_vlan_without_station(dev, apdev, p):
 
         dev[0].request("DISCONNECT")
         dev[0].wait_disconnected()
+        if filename.startswith('/tmp/'):
+            os.unlink(filename)
 
     finally:
         subprocess.call(['ip', 'link', 'set', 'dev', 'brvlan1', 'down'])
@@ -576,8 +658,8 @@ def test_ap_vlan_without_station(dev, apdev, p):
 @remote_compatible
 def test_ap_open_per_sta_vif(dev, apdev):
     """AP VLAN with open network"""
-    params = { "ssid": "test-vlan-open",
-               "per_sta_vif": "1" }
+    params = {"ssid": "test-vlan-open",
+              "per_sta_vif": "1"}
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
@@ -587,9 +669,9 @@ def test_ap_open_per_sta_vif(dev, apdev):
 @remote_compatible
 def test_ap_vlan_open_per_sta_vif(dev, apdev):
     """AP VLAN (dynamic) with open network"""
-    params = { "ssid": "test-vlan-open",
-               "per_sta_vif": "1",
-               "dynamic_vlan": "1" }
+    params = {"ssid": "test-vlan-open",
+              "per_sta_vif": "1",
+              "dynamic_vlan": "1"}
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].connect("test-vlan-open", key_mgmt="NONE", scan_freq="2412")
@@ -653,14 +735,17 @@ def test_ap_vlan_wpa2_radius_mixed(dev, apdev):
 
 def test_ap_vlan_reconnect(dev, apdev):
     """AP VLAN with WPA2-PSK connect, disconnect, connect"""
+    filename = hostapd.acl_file(dev, apdev, 'hostapd.accept')
+    hostapd.send_file(apdev[0], filename, filename)
     params = hostapd.wpa2_params(ssid="test-vlan",
                                  passphrase="12345678")
     params['dynamic_vlan'] = "1"
-    params['accept_mac_file'] = "hostapd.accept"
+    params['accept_mac_file'] = filename
     hapd = hostapd.add_ap(apdev[0], params)
 
     logger.info("connect sta")
     dev[0].connect("test-vlan", psk="12345678", scan_freq="2412")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
     logger.info("disconnect sta")
     dev[0].request("REMOVE_NETWORK all")
@@ -668,4 +753,55 @@ def test_ap_vlan_reconnect(dev, apdev):
     time.sleep(1)
     logger.info("reconnect sta")
     dev[0].connect("test-vlan", psk="12345678", scan_freq="2412")
+    hapd.wait_sta()
     hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
+    if filename.startswith('/tmp/'):
+        os.unlink(filename)
+
+def test_ap_vlan_psk(dev, apdev, params):
+    """AP VLAN based on PSK/passphrase"""
+    psk_file = os.path.join(params['logdir'], 'ap_vlan_psk.wpa_psk')
+    with open(psk_file, 'w') as f:
+        f.write('vlanid=1 00:00:00:00:00:00 passphrase-for-vlan-1\n')
+        f.write('vlanid=2 00:00:00:00:00:00 passphrase-for-vlan-2\n')
+        f.write('vlanid=3 00:00:00:00:00:00 passphrase-for-vlan-3\n')
+
+    ssid = 'test-vlan-rsn'
+    params = hostapd.wpa2_params(ssid=ssid)
+    params['dynamic_vlan'] = "1"
+    params['wpa_psk_file'] = psk_file
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].connect(ssid, psk="passphrase-for-vlan-1", scan_freq="2412")
+    dev[1].connect(ssid, psk="passphrase-for-vlan-2", scan_freq="2412")
+    dev[2].connect(ssid, psk="passphrase-for-vlan-3", scan_freq="2412")
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hapd.wait_sta()
+    hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
+    hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
+    hwsim_utils.test_connectivity_iface(dev[2], hapd, "brvlan3")
+
+def test_ap_vlan_sae(dev, apdev, params):
+    """AP VLAN based on SAE Password Identifier"""
+    for i in range(3):
+        if "SAE" not in dev[i].get_capability("auth_alg"):
+            raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae-vlan")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_password'] = ['pw1|vlanid=1|id=id1',
+                              'pw2|mac=ff:ff:ff:ff:ff:ff|vlanid=2|id=id2',
+                              'pw3|vlanid=3|id=id3']
+    params['dynamic_vlan'] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    for i in range(3):
+        dev[i].request("SET sae_groups ")
+        dev[i].connect("test-sae-vlan", sae_password="pw%d" % (i + 1),
+                       sae_password_id="id%d" % (i + 1),
+                       key_mgmt="SAE", scan_freq="2412")
+        hapd.wait_sta()
+
+    hwsim_utils.test_connectivity_iface(dev[0], hapd, "brvlan1")
+    hwsim_utils.test_connectivity_iface(dev[1], hapd, "brvlan2")
+    hwsim_utils.test_connectivity_iface(dev[2], hapd, "brvlan3")

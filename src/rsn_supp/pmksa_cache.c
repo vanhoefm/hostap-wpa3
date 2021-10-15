@@ -212,7 +212,8 @@ pmksa_cache_add_entry(struct rsn_pmksa_cache *pmksa,
 				   "that was based on the old PMK");
 			if (!pos->opportunistic)
 				pmksa_cache_flush(pmksa, entry->network_ctx,
-						  pos->pmk, pos->pmk_len);
+						  pos->pmk, pos->pmk_len,
+						  false);
 			pmksa_cache_free_entry(pmksa, pos, PMKSA_REPLACE);
 			break;
 		}
@@ -263,10 +264,14 @@ pmksa_cache_add_entry(struct rsn_pmksa_cache *pmksa,
 	}
 	pmksa->pmksa_count++;
 	wpa_printf(MSG_DEBUG, "RSN: Added PMKSA cache entry for " MACSTR
-		   " network_ctx=%p", MAC2STR(entry->aa), entry->network_ctx);
+		   " network_ctx=%p akmp=0x%x", MAC2STR(entry->aa),
+		   entry->network_ctx, entry->akmp);
 	wpa_sm_add_pmkid(pmksa->sm, entry->network_ctx, entry->aa, entry->pmkid,
 			 entry->fils_cache_id_set ? entry->fils_cache_id : NULL,
-			 entry->pmk, entry->pmk_len);
+			 entry->pmk, entry->pmk_len,
+			 pmksa->sm->dot11RSNAConfigPMKLifetime,
+			 pmksa->sm->dot11RSNAConfigPMKReauthThreshold,
+			 entry->akmp);
 
 	return entry;
 }
@@ -276,11 +281,13 @@ pmksa_cache_add_entry(struct rsn_pmksa_cache *pmksa,
  * pmksa_cache_flush - Flush PMKSA cache entries for a specific network
  * @pmksa: Pointer to PMKSA cache data from pmksa_cache_init()
  * @network_ctx: Network configuration context or %NULL to flush all entries
- * @pmk: PMK to match for or %NYLL to match all PMKs
+ * @pmk: PMK to match for or %NULL to match all PMKs
  * @pmk_len: PMK length
+ * @external_only: Flush only PMKSA cache entries configured by external
+ * applications
  */
 void pmksa_cache_flush(struct rsn_pmksa_cache *pmksa, void *network_ctx,
-		       const u8 *pmk, size_t pmk_len)
+		       const u8 *pmk, size_t pmk_len, bool external_only)
 {
 	struct rsn_pmksa_cache_entry *entry, *prev = NULL, *tmp;
 	int removed = 0;
@@ -291,7 +298,8 @@ void pmksa_cache_flush(struct rsn_pmksa_cache *pmksa, void *network_ctx,
 		     network_ctx == NULL) &&
 		    (pmk == NULL ||
 		     (pmk_len == entry->pmk_len &&
-		      os_memcmp(pmk, entry->pmk, pmk_len) == 0))) {
+		      os_memcmp(pmk, entry->pmk, pmk_len) == 0)) &&
+		    (!external_only || entry->external)) {
 			wpa_printf(MSG_DEBUG, "RSN: Flush PMKSA cache entry "
 				   "for " MACSTR, MAC2STR(entry->aa));
 			if (prev)
@@ -370,9 +378,14 @@ pmksa_cache_clone_entry(struct rsn_pmksa_cache *pmksa,
 {
 	struct rsn_pmksa_cache_entry *new_entry;
 	os_time_t old_expiration = old_entry->expiration;
+	os_time_t old_reauth_time = old_entry->reauth_time;
+	const u8 *pmkid = NULL;
 
+	if (wpa_key_mgmt_sae(old_entry->akmp) ||
+	    wpa_key_mgmt_fils(old_entry->akmp))
+		pmkid = old_entry->pmkid;
 	new_entry = pmksa_cache_add(pmksa, old_entry->pmk, old_entry->pmk_len,
-				    NULL, NULL, 0,
+				    pmkid, NULL, 0,
 				    aa, pmksa->sm->own_addr,
 				    old_entry->network_ctx, old_entry->akmp,
 				    old_entry->fils_cache_id_set ?
@@ -382,6 +395,7 @@ pmksa_cache_clone_entry(struct rsn_pmksa_cache *pmksa,
 
 	/* TODO: reorder entries based on expiration time? */
 	new_entry->expiration = old_expiration;
+	new_entry->reauth_time = old_reauth_time;
 	new_entry->opportunistic = 1;
 
 	return new_entry;
@@ -412,6 +426,20 @@ pmksa_cache_get_opportunistic(struct rsn_pmksa_cache *pmksa, void *network_ctx,
 	while (entry) {
 		if (entry->network_ctx == network_ctx &&
 		    (!akmp || entry->akmp == akmp)) {
+			struct os_reltime now;
+
+			if (wpa_key_mgmt_sae(entry->akmp) &&
+			    os_get_reltime(&now) == 0 &&
+			    entry->reauth_time < now.sec) {
+				wpa_printf(MSG_DEBUG,
+					   "RSN: Do not clone PMKSA cache entry for "
+					   MACSTR
+					   " since its reauth threshold has passed",
+					   MAC2STR(entry->aa));
+				entry = entry->next;
+				continue;
+			}
+
 			entry = pmksa_cache_clone_entry(pmksa, entry, aa);
 			if (entry) {
 				wpa_printf(MSG_DEBUG, "RSN: added "
@@ -465,6 +493,9 @@ void pmksa_cache_clear_current(struct wpa_sm *sm)
 {
 	if (sm == NULL)
 		return;
+	if (sm->cur_pmksa)
+		wpa_printf(MSG_DEBUG,
+			   "RSN: Clear current PMKSA entry selection");
 	sm->cur_pmksa = NULL;
 }
 
@@ -515,6 +546,20 @@ int pmksa_cache_set_current(struct wpa_sm *sm, const u8 *pmkid,
 							      network_ctx,
 							      fils_cache_id);
 	if (sm->cur_pmksa) {
+		struct os_reltime now;
+
+		if (wpa_key_mgmt_sae(sm->cur_pmksa->akmp) &&
+		    os_get_reltime(&now) == 0 &&
+		    sm->cur_pmksa->reauth_time < now.sec) {
+			wpa_printf(MSG_DEBUG,
+				   "RSN: Do not allow PMKSA cache entry for "
+				   MACSTR
+				   " to be used for SAE since its reauth threshold has passed",
+				   MAC2STR(sm->cur_pmksa->aa));
+			sm->cur_pmksa = NULL;
+			return -1;
+		}
+
 		wpa_hexdump(MSG_DEBUG, "RSN: PMKSA cache entry found - PMKID",
 			    sm->cur_pmksa->pmkid, PMKID_LEN);
 		return 0;
@@ -620,6 +665,39 @@ pmksa_cache_init(void (*free_cb)(struct rsn_pmksa_cache_entry *entry,
 	}
 
 	return pmksa;
+}
+
+
+void pmksa_cache_reconfig(struct rsn_pmksa_cache *pmksa)
+{
+	struct rsn_pmksa_cache_entry *entry;
+	struct os_reltime now;
+
+	if (!pmksa || !pmksa->pmksa)
+		return;
+
+	os_get_reltime(&now);
+	for (entry = pmksa->pmksa; entry; entry = entry->next) {
+		u32 life_time;
+		u8 reauth_threshold;
+
+		if (entry->expiration - now.sec < 1 ||
+		    entry->reauth_time - now.sec < 1)
+			continue;
+
+		life_time = entry->expiration - now.sec;
+		reauth_threshold = (entry->reauth_time - now.sec) * 100 /
+			life_time;
+		if (!reauth_threshold)
+			continue;
+
+		wpa_sm_add_pmkid(pmksa->sm, entry->network_ctx, entry->aa,
+				 entry->pmkid,
+				 entry->fils_cache_id_set ?
+				 entry->fils_cache_id : NULL,
+				 entry->pmk, entry->pmk_len, life_time,
+				 reauth_threshold, entry->akmp);
+	}
 }
 
 #endif /* IEEE8021X_EAPOL */

@@ -111,7 +111,10 @@ class FstLauncher:
         self.reg_ctrl = fst_test_common.HapdRegCtrl()
         self.test_is_supported()
 
-    def __del__(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
         self.cleanup()
 
     @staticmethod
@@ -162,8 +165,8 @@ class FstLauncher:
                            'alt-hostapd/hostapd/hostapd')
         if not os.path.exists(prg):
             prg = '../../hostapd/hostapd'
-        cmd = [ prg, '-B', '-dddt',
-                '-P', pidfile, '-f', mylogfile, '-g', self.hapd_fst_global]
+        cmd = [prg, '-B', '-dddt',
+               '-P', pidfile, '-f', mylogfile, '-g', self.hapd_fst_global]
         for i in range(0, len(self.cfgs_to_run)):
             cfg = self.cfgs_to_run[i]
             if cfg.is_ap() == True:
@@ -189,8 +192,8 @@ class FstLauncher:
                            'alt-wpa_supplicant/wpa_supplicant/wpa_supplicant')
         if not os.path.exists(prg):
             prg = '../../wpa_supplicant/wpa_supplicant'
-        cmd = [ prg, '-B', '-dddt',
-                '-P' + pidfile, '-f', mylogfile, '-g', self.wsup_fst_global ]
+        cmd = [prg, '-B', '-dddt',
+               '-P' + pidfile, '-f', mylogfile, '-g', self.wsup_fst_global]
         sta_no = 0
         for i in range(0, len(self.cfgs_to_run)):
             cfg = self.cfgs_to_run[i]
@@ -219,6 +222,7 @@ class FstLauncher:
         while len(self.cfgs_to_run) != 0:
             cfg = self.cfgs_to_run[0]
             self.remove_cfg(cfg)
+        fst_test_common.fst_clear_regdom()
 
     def kill_pid(self, pidfile, try_again=False):
         """Kills process by PID file"""
@@ -235,14 +239,14 @@ class FstLauncher:
         pid = -1
         try:
             for i in range(3):
-                pf = file(pidfile, 'r')
+                pf = open(pidfile, 'r')
                 pidtxt = pf.read().strip()
                 self.logger.debug("kill_pid: %s: '%s'" % (pidfile, pidtxt))
                 pf.close()
                 try:
                     pid = int(pidtxt)
                     break
-                except Exception, e:
+                except Exception as e:
                     self.logger.debug("kill_pid: No valid PID found: %s" % str(e))
                     time.sleep(1)
             self.logger.debug("kill_pid %s --> pid %d" % (pidfile, pid))
@@ -256,7 +260,7 @@ class FstLauncher:
                     break
                 # Wait and check again
                 time.sleep(1)
-        except Exception, e:
+        except Exception as e:
             self.logger.debug("Didn't stop the pid=%d. Was it stopped already? (%s)" % (pid, str(e)))
 
 
@@ -268,7 +272,7 @@ def parse_ies(iehex, el=-1):
     iel = [iehex[i:i + 2] for i in range(0, len(iehex), 2)]
     for i in range(0, len(iel)):
          iel[i] = int(iel[i], 16)
-    # Sanity check
+    # Validity check
     i = 0
     res = []
     while i < len(iel):
@@ -294,101 +298,101 @@ def scan_and_get_bss(dev, frq):
 # AP configuration tests
 
 def run_test_ap_configuration(apdev, test_params,
-                              fst_group = fst_test_common.fst_test_def_group,
-                              fst_pri = fst_test_common.fst_test_def_prio_high,
-                              fst_llt = fst_test_common.fst_test_def_llt):
+                              fst_group=fst_test_common.fst_test_def_group,
+                              fst_pri=fst_test_common.fst_test_def_prio_high,
+                              fst_llt=fst_test_common.fst_test_def_llt):
     """Runs FST hostapd where the 1st AP configuration is fixed, the 2nd fst
     configuration is provided by the parameters. Returns the result of the run:
     0 - no errors discovered, an error otherwise. The function is used for
     simplek "bad configuration" tests."""
     logdir = test_params['logdir']
-    fst_launcher = FstLauncher(logdir)
-    ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_goodconf', 'a',
-                              fst_test_common.fst_test_def_chan_a,
-                              fst_test_common.fst_test_def_group,
-                              fst_test_common.fst_test_def_prio_low,
-                              fst_test_common.fst_test_def_llt)
-    ap2 = FstLauncherConfigAP(apdev[1]['ifname'], 'fst_badconf', 'b',
-                              fst_test_common.fst_test_def_chan_g, fst_group,
-                              fst_pri, fst_llt)
-    fst_launcher.add_cfg(ap1)
-    fst_launcher.add_cfg(ap2)
-    res = fst_launcher.run_hostapd()
-    return res
+    with FstLauncher(logdir) as fst_launcher:
+        ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_goodconf', 'a',
+                                  fst_test_common.fst_test_def_chan_a,
+                                  fst_test_common.fst_test_def_group,
+                                  fst_test_common.fst_test_def_prio_low,
+                                  fst_test_common.fst_test_def_llt)
+        ap2 = FstLauncherConfigAP(apdev[1]['ifname'], 'fst_badconf', 'b',
+                                  fst_test_common.fst_test_def_chan_g, fst_group,
+                                  fst_pri, fst_llt)
+        fst_launcher.add_cfg(ap1)
+        fst_launcher.add_cfg(ap2)
+        res = fst_launcher.run_hostapd()
+        return res
 
 def run_test_sta_configuration(test_params,
-                               fst_group = fst_test_common.fst_test_def_group,
-                               fst_pri = fst_test_common.fst_test_def_prio_high,
-                               fst_llt = fst_test_common.fst_test_def_llt):
+                               fst_group=fst_test_common.fst_test_def_group,
+                               fst_pri=fst_test_common.fst_test_def_prio_high,
+                               fst_llt=fst_test_common.fst_test_def_llt):
     """Runs FST wpa_supplicant where the 1st STA configuration is fixed, the
     2nd fst configuration is provided by the parameters. Returns the result of
     the run: 0 - no errors discovered, an error otherwise. The function is used
     for simple "bad configuration" tests."""
     logdir = test_params['logdir']
-    fst_launcher = FstLauncher(logdir)
-    sta1 = FstLauncherConfigSTA('wlan5',
-                                fst_test_common.fst_test_def_group,
-                                fst_test_common.fst_test_def_prio_low,
-                                fst_test_common.fst_test_def_llt)
-    sta2 = FstLauncherConfigSTA('wlan6', fst_group, fst_pri, fst_llt)
-    fst_launcher.add_cfg(sta1)
-    fst_launcher.add_cfg(sta2)
-    res = fst_launcher.run_wpa_supplicant()
-    return res
+    with FstLauncher(logdir) as fst_launcher:
+        sta1 = FstLauncherConfigSTA('wlan5',
+                                    fst_test_common.fst_test_def_group,
+                                    fst_test_common.fst_test_def_prio_low,
+                                    fst_test_common.fst_test_def_llt)
+        sta2 = FstLauncherConfigSTA('wlan6', fst_group, fst_pri, fst_llt)
+        fst_launcher.add_cfg(sta1)
+        fst_launcher.add_cfg(sta2)
+        res = fst_launcher.run_wpa_supplicant()
+        return res
 
 def test_fst_ap_config_llt_neg(dev, apdev, test_params):
     """FST AP configuration negative LLT"""
-    res = run_test_ap_configuration(apdev, test_params, fst_llt = '-1')
+    res = run_test_ap_configuration(apdev, test_params, fst_llt='-1')
     if res == 0:
         raise Exception("hostapd started with a negative llt")
 
 def test_fst_ap_config_llt_zero(dev, apdev, test_params):
     """FST AP configuration zero LLT"""
-    res = run_test_ap_configuration(apdev, test_params, fst_llt = '0')
+    res = run_test_ap_configuration(apdev, test_params, fst_llt='0')
     if res == 0:
         raise Exception("hostapd started with a zero llt")
 
 def test_fst_ap_config_llt_too_big(dev, apdev, test_params):
     """FST AP configuration LLT is too big"""
     res = run_test_ap_configuration(apdev, test_params,
-                                    fst_llt = '4294967296') #0x100000000
+                                    fst_llt='4294967296') #0x100000000
     if res == 0:
         raise Exception("hostapd started with llt that is too big")
 
 def test_fst_ap_config_llt_nan(dev, apdev, test_params):
     """FST AP configuration LLT is not a number"""
-    res = run_test_ap_configuration(apdev, test_params, fst_llt = 'nan')
+    res = run_test_ap_configuration(apdev, test_params, fst_llt='nan')
     if res == 0:
         raise Exception("hostapd started with llt not a number")
 
 def test_fst_ap_config_pri_neg(dev, apdev, test_params):
     """FST AP configuration Priority negative"""
-    res = run_test_ap_configuration(apdev, test_params, fst_pri = '-1')
+    res = run_test_ap_configuration(apdev, test_params, fst_pri='-1')
     if res == 0:
         raise Exception("hostapd started with a negative fst priority")
 
 def test_fst_ap_config_pri_zero(dev, apdev, test_params):
     """FST AP configuration Priority zero"""
-    res = run_test_ap_configuration(apdev, test_params, fst_pri = '0')
+    res = run_test_ap_configuration(apdev, test_params, fst_pri='0')
     if res == 0:
         raise Exception("hostapd started with a zero fst priority")
 
 def test_fst_ap_config_pri_large(dev, apdev, test_params):
     """FST AP configuration Priority too large"""
-    res = run_test_ap_configuration(apdev, test_params, fst_pri = '256')
+    res = run_test_ap_configuration(apdev, test_params, fst_pri='256')
     if res == 0:
         raise Exception("hostapd started with too large fst priority")
 
 def test_fst_ap_config_pri_nan(dev, apdev, test_params):
     """FST AP configuration Priority not a number"""
-    res = run_test_ap_configuration(apdev, test_params, fst_pri = 'nan')
+    res = run_test_ap_configuration(apdev, test_params, fst_pri='nan')
     if res == 0:
         raise Exception("hostapd started with fst priority not a number")
 
 def test_fst_ap_config_group_len(dev, apdev, test_params):
     """FST AP configuration Group max length"""
     res = run_test_ap_configuration(apdev, test_params,
-                                    fst_group = 'fstg5678abcd34567')
+                                    fst_group='fstg5678abcd34567')
     if res == 0:
         raise Exception("hostapd started with fst_group length too big")
 
@@ -400,7 +404,7 @@ def test_fst_ap_config_good(dev, apdev, test_params):
 
 def test_fst_ap_config_default(dev, apdev, test_params):
     """FST AP configuration default parameters"""
-    res = run_test_ap_configuration(apdev, test_params, fst_llt = None)
+    res = run_test_ap_configuration(apdev, test_params, fst_llt=None)
     if res != 0:
         raise Exception("hostapd didn't start with valid config parameters")
 
@@ -409,57 +413,57 @@ def test_fst_ap_config_default(dev, apdev, test_params):
 
 def test_fst_sta_config_llt_neg(dev, apdev, test_params):
     """FST STA configuration negative LLT"""
-    res = run_test_sta_configuration(test_params, fst_llt = '-1')
+    res = run_test_sta_configuration(test_params, fst_llt='-1')
     if res == 0:
         raise Exception("wpa_supplicant started with a negative llt")
 
 def test_fst_sta_config_llt_zero(dev, apdev, test_params):
     """FST STA configuration zero LLT"""
-    res = run_test_sta_configuration(test_params, fst_llt = '0')
+    res = run_test_sta_configuration(test_params, fst_llt='0')
     if res == 0:
         raise Exception("wpa_supplicant started with a zero llt")
 
 def test_fst_sta_config_llt_large(dev, apdev, test_params):
     """FST STA configuration LLT is too large"""
     res = run_test_sta_configuration(test_params,
-                                     fst_llt = '4294967296') #0x100000000
+                                     fst_llt='4294967296') #0x100000000
     if res == 0:
         raise Exception("wpa_supplicant started with llt that is too large")
 
 def test_fst_sta_config_llt_nan(dev, apdev, test_params):
     """FST STA configuration LLT is not a number"""
-    res = run_test_sta_configuration(test_params, fst_llt = 'nan')
+    res = run_test_sta_configuration(test_params, fst_llt='nan')
     if res == 0:
         raise Exception("wpa_supplicant started with llt not a number")
 
 def test_fst_sta_config_pri_neg(dev, apdev, test_params):
     """FST STA configuration Priority negative"""
-    res = run_test_sta_configuration(test_params, fst_pri = '-1')
+    res = run_test_sta_configuration(test_params, fst_pri='-1')
     if res == 0:
         raise Exception("wpa_supplicant started with a negative fst priority")
 
 def test_fst_sta_config_pri_zero(dev, apdev, test_params):
     """FST STA configuration Priority zero"""
-    res = run_test_sta_configuration(test_params, fst_pri = '0')
+    res = run_test_sta_configuration(test_params, fst_pri='0')
     if res == 0:
         raise Exception("wpa_supplicant started with a zero fst priority")
 
 def test_fst_sta_config_pri_big(dev, apdev, test_params):
     """FST STA configuration Priority too large"""
-    res = run_test_sta_configuration(test_params, fst_pri = '256')
+    res = run_test_sta_configuration(test_params, fst_pri='256')
     if res == 0:
         raise Exception("wpa_supplicant started with too large fst priority")
 
 def test_fst_sta_config_pri_nan(dev, apdev, test_params):
     """FST STA configuration Priority not a number"""
-    res = run_test_sta_configuration(test_params, fst_pri = 'nan')
+    res = run_test_sta_configuration(test_params, fst_pri='nan')
     if res == 0:
         raise Exception("wpa_supplicant started with fst priority not a number")
 
 def test_fst_sta_config_group_len(dev, apdev, test_params):
     """FST STA configuration Group max length"""
     res = run_test_sta_configuration(test_params,
-                                     fst_group = 'fstg5678abcd34567')
+                                     fst_group='fstg5678abcd34567')
     if res == 0:
         raise Exception("wpa_supplicant started with fst_group length too big")
 
@@ -471,7 +475,7 @@ def test_fst_sta_config_good(dev, apdev, test_params):
 
 def test_fst_sta_config_default(dev, apdev, test_params):
     """FST STA configuration default parameters"""
-    res = run_test_sta_configuration(test_params, fst_llt = None)
+    res = run_test_sta_configuration(test_params, fst_llt=None)
     if res != 0:
         raise Exception("wpa_supplicant didn't start with valid config parameters")
 
@@ -480,24 +484,24 @@ def test_fst_scan_mb(dev, apdev, test_params):
     logdir = test_params['logdir']
 
     # Test valid MB IE in scan results
-    fst_launcher = FstLauncher(logdir)
-    ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_11a', 'a',
-                              fst_test_common.fst_test_def_chan_a,
-                              fst_test_common.fst_test_def_group,
-                              fst_test_common.fst_test_def_prio_high)
-    ap2 = FstLauncherConfigAP(apdev[1]['ifname'], 'fst_11g', 'b',
-                              fst_test_common.fst_test_def_chan_g,
-                              fst_test_common.fst_test_def_group,
-                              fst_test_common.fst_test_def_prio_low)
-    fst_launcher.add_cfg(ap1)
-    fst_launcher.add_cfg(ap2)
-    res = fst_launcher.run_hostapd()
-    if res != 0:
-        raise Exception("hostapd didn't start properly")
-    try:
-        mbie1=[]
+    with FstLauncher(logdir) as fst_launcher:
+        ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_11a', 'a',
+                                  fst_test_common.fst_test_def_chan_a,
+                                  fst_test_common.fst_test_def_group,
+                                  fst_test_common.fst_test_def_prio_high)
+        ap2 = FstLauncherConfigAP(apdev[1]['ifname'], 'fst_11g', 'b',
+                                  fst_test_common.fst_test_def_chan_g,
+                                  fst_test_common.fst_test_def_group,
+                                  fst_test_common.fst_test_def_prio_low)
+        fst_launcher.add_cfg(ap1)
+        fst_launcher.add_cfg(ap2)
+        res = fst_launcher.run_hostapd()
+        if res != 0:
+            raise Exception("hostapd didn't start properly")
+
+        mbie1 = []
         flags1 = ''
-        mbie2=[]
+        mbie2 = []
         flags2 = ''
         # Scan 1st AP
         vals1 = scan_and_get_bss(dev[0], fst_test_common.fst_test_def_freq_a)
@@ -510,11 +514,9 @@ def test_fst_scan_mb(dev, apdev, test_params):
         vals2 = scan_and_get_bss(dev[2], fst_test_common.fst_test_def_freq_g)
         if vals2 != None:
             if 'ie' in vals2:
-                mbie2 = parse_ies(vals2['ie'],0x9e)
+                mbie2 = parse_ies(vals2['ie'], 0x9e)
             if 'flags' in vals2:
                 flags2 = vals2['flags']
-    finally:
-         fst_launcher.cleanup()
 
     if len(mbie1) == 0:
         raise Exception("No MB IE created by 1st AP")
@@ -526,18 +528,18 @@ def test_fst_scan_nomb(dev, apdev, test_params):
     logdir = test_params['logdir']
 
     # Test valid MB IE in scan results
-    fst_launcher = FstLauncher(logdir)
-    ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_11a', 'a',
-                              fst_test_common.fst_test_def_chan_a,
-                              fst_test_common.fst_test_def_group,
-                              fst_test_common.fst_test_def_prio_high)
-    fst_launcher.add_cfg(ap1)
-    res = fst_launcher.run_hostapd()
-    if res != 0:
-        raise Exception("Hostapd didn't start properly")
-    try:
+    with FstLauncher(logdir) as fst_launcher:
+        ap1 = FstLauncherConfigAP(apdev[0]['ifname'], 'fst_11a', 'a',
+                                  fst_test_common.fst_test_def_chan_a,
+                                  fst_test_common.fst_test_def_group,
+                                  fst_test_common.fst_test_def_prio_high)
+        fst_launcher.add_cfg(ap1)
+        res = fst_launcher.run_hostapd()
+        if res != 0:
+            raise Exception("Hostapd didn't start properly")
+
         time.sleep(2)
-        mbie1=[]
+        mbie1 = []
         flags1 = ''
         vals1 = scan_and_get_bss(dev[0], fst_test_common.fst_test_def_freq_a)
         if vals1 != None:
@@ -545,8 +547,6 @@ def test_fst_scan_nomb(dev, apdev, test_params):
                 mbie1 = parse_ies(vals1['ie'], 0x9e)
             if 'flags' in vals1:
                 flags1 = vals1['flags']
-    finally:
-        fst_launcher.cleanup()
 
     if len(mbie1) != 0:
         raise Exception("MB IE exists with 1 AP")

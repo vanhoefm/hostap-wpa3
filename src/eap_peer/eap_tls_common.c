@@ -1,6 +1,6 @@
 /*
  * EAP peer: EAP-TLS/PEAP/TTLS/FAST common functions
- * Copyright (c) 2004-2013, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2004-2019, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -16,7 +16,7 @@
 #include "eap_config.h"
 
 
-static struct wpabuf * eap_tls_msg_alloc(EapType type, size_t payload_len,
+static struct wpabuf * eap_tls_msg_alloc(enum eap_type type, size_t payload_len,
 					 u8 code, u8 identifier)
 {
 	if (type == EAP_UNAUTH_TLS_TYPE)
@@ -70,16 +70,22 @@ static void eap_tls_params_flags(struct tls_connection_params *params,
 		params->flags &= ~TLS_CONN_DISABLE_SESSION_TICKET;
 	if (os_strstr(txt, "tls_disable_tlsv1_0=1"))
 		params->flags |= TLS_CONN_DISABLE_TLSv1_0;
-	if (os_strstr(txt, "tls_disable_tlsv1_0=0"))
+	if (os_strstr(txt, "tls_disable_tlsv1_0=0")) {
 		params->flags &= ~TLS_CONN_DISABLE_TLSv1_0;
+		params->flags |= TLS_CONN_ENABLE_TLSv1_0;
+	}
 	if (os_strstr(txt, "tls_disable_tlsv1_1=1"))
 		params->flags |= TLS_CONN_DISABLE_TLSv1_1;
-	if (os_strstr(txt, "tls_disable_tlsv1_1=0"))
+	if (os_strstr(txt, "tls_disable_tlsv1_1=0")) {
 		params->flags &= ~TLS_CONN_DISABLE_TLSv1_1;
+		params->flags |= TLS_CONN_ENABLE_TLSv1_1;
+	}
 	if (os_strstr(txt, "tls_disable_tlsv1_2=1"))
 		params->flags |= TLS_CONN_DISABLE_TLSv1_2;
-	if (os_strstr(txt, "tls_disable_tlsv1_2=0"))
+	if (os_strstr(txt, "tls_disable_tlsv1_2=0")) {
 		params->flags &= ~TLS_CONN_DISABLE_TLSv1_2;
+		params->flags |= TLS_CONN_ENABLE_TLSv1_2;
+	}
 	if (os_strstr(txt, "tls_disable_tlsv1_3=1"))
 		params->flags |= TLS_CONN_DISABLE_TLSv1_3;
 	if (os_strstr(txt, "tls_disable_tlsv1_3=0"))
@@ -99,17 +105,18 @@ static void eap_tls_params_flags(struct tls_connection_params *params,
 }
 
 
-static void eap_tls_params_from_conf1(struct tls_connection_params *params,
-				      struct eap_peer_config *config)
+static void eap_tls_cert_params_from_conf(struct tls_connection_params *params,
+					  struct eap_peer_cert_config *config)
 {
-	params->ca_cert = (char *) config->ca_cert;
-	params->ca_path = (char *) config->ca_path;
-	params->client_cert = (char *) config->client_cert;
-	params->private_key = (char *) config->private_key;
-	params->private_key_passwd = (char *) config->private_key_passwd;
-	params->dh_file = (char *) config->dh_file;
-	params->subject_match = (char *) config->subject_match;
-	params->altsubject_match = (char *) config->altsubject_match;
+	params->ca_cert = config->ca_cert;
+	params->ca_path = config->ca_path;
+	params->client_cert = config->client_cert;
+	params->private_key = config->private_key;
+	params->private_key_passwd = config->private_key_passwd;
+	params->dh_file = config->dh_file;
+	params->subject_match = config->subject_match;
+	params->altsubject_match = config->altsubject_match;
+	params->check_cert_subject = config->check_cert_subject;
 	params->suffix_match = config->domain_suffix_match;
 	params->domain_match = config->domain_match;
 	params->engine = config->engine;
@@ -118,6 +125,19 @@ static void eap_tls_params_from_conf1(struct tls_connection_params *params,
 	params->key_id = config->key_id;
 	params->cert_id = config->cert_id;
 	params->ca_cert_id = config->ca_cert_id;
+	if (config->ocsp)
+		params->flags |= TLS_CONN_REQUEST_OCSP;
+	if (config->ocsp >= 2)
+		params->flags |= TLS_CONN_REQUIRE_OCSP;
+	if (config->ocsp == 3)
+		params->flags |= TLS_CONN_REQUIRE_OCSP_ALL;
+}
+
+
+static void eap_tls_params_from_conf1(struct tls_connection_params *params,
+				      struct eap_peer_config *config)
+{
+	eap_tls_cert_params_from_conf(params, &config->cert);
 	eap_tls_params_flags(params, config->phase1);
 }
 
@@ -125,23 +145,16 @@ static void eap_tls_params_from_conf1(struct tls_connection_params *params,
 static void eap_tls_params_from_conf2(struct tls_connection_params *params,
 				      struct eap_peer_config *config)
 {
-	params->ca_cert = (char *) config->ca_cert2;
-	params->ca_path = (char *) config->ca_path2;
-	params->client_cert = (char *) config->client_cert2;
-	params->private_key = (char *) config->private_key2;
-	params->private_key_passwd = (char *) config->private_key2_passwd;
-	params->dh_file = (char *) config->dh_file2;
-	params->subject_match = (char *) config->subject_match2;
-	params->altsubject_match = (char *) config->altsubject_match2;
-	params->suffix_match = config->domain_suffix_match2;
-	params->domain_match = config->domain_match2;
-	params->engine = config->engine2;
-	params->engine_id = config->engine2_id;
-	params->pin = config->pin2;
-	params->key_id = config->key2_id;
-	params->cert_id = config->cert2_id;
-	params->ca_cert_id = config->ca_cert2_id;
+	eap_tls_cert_params_from_conf(params, &config->phase2_cert);
 	eap_tls_params_flags(params, config->phase2);
+}
+
+
+static void eap_tls_params_from_conf2m(struct tls_connection_params *params,
+				       struct eap_peer_config *config)
+{
+	eap_tls_cert_params_from_conf(params, &config->machine_cert);
+	eap_tls_params_flags(params, config->machine_phase2);
 }
 
 
@@ -151,7 +164,8 @@ static int eap_tls_params_from_conf(struct eap_sm *sm,
 				    struct eap_peer_config *config, int phase2)
 {
 	os_memset(params, 0, sizeof(*params));
-	if (sm->workaround && data->eap_type != EAP_TYPE_FAST) {
+	if (sm->workaround && data->eap_type != EAP_TYPE_FAST &&
+	    data->eap_type != EAP_TYPE_TEAP) {
 		/*
 		 * Some deployed authentication servers seem to be unable to
 		 * handle the TLS Session Ticket extension (they are supposed
@@ -163,14 +177,24 @@ static int eap_tls_params_from_conf(struct eap_sm *sm,
 		 */
 		params->flags |= TLS_CONN_DISABLE_SESSION_TICKET;
 	}
+	if (data->eap_type == EAP_TYPE_TEAP) {
+		/* RFC 7170 requires TLS v1.2 or newer to be used with TEAP */
+		params->flags |= TLS_CONN_DISABLE_TLSv1_0 |
+			TLS_CONN_DISABLE_TLSv1_1;
+		if (config->teap_anon_dh)
+			params->flags |= TLS_CONN_TEAP_ANON_DH;
+	}
 	if (data->eap_type == EAP_TYPE_FAST ||
+	    data->eap_type == EAP_TYPE_TEAP ||
 	    data->eap_type == EAP_TYPE_TTLS ||
 	    data->eap_type == EAP_TYPE_PEAP) {
 		/* The current EAP peer implementation is not yet ready for the
 		 * TLS v1.3 changes, so disable this by default for now. */
 		params->flags |= TLS_CONN_DISABLE_TLSv1_3;
 	}
-	if (data->eap_type == EAP_TYPE_TLS) {
+	if (data->eap_type == EAP_TYPE_TLS ||
+	    data->eap_type == EAP_UNAUTH_TLS_TYPE ||
+	    data->eap_type == EAP_WFA_UNAUTH_TLS_TYPE) {
 		/* While the current EAP-TLS implementation is more or less
 		 * complete for TLS v1.3, there has been no interoperability
 		 * testing with other implementations, so disable for by default
@@ -180,7 +204,10 @@ static int eap_tls_params_from_conf(struct eap_sm *sm,
 		 */
 		params->flags |= TLS_CONN_DISABLE_TLSv1_3;
 	}
-	if (phase2) {
+	if (phase2 && sm->use_machine_cred) {
+		wpa_printf(MSG_DEBUG, "TLS: using machine config options");
+		eap_tls_params_from_conf2m(params, config);
+	} else if (phase2) {
 		wpa_printf(MSG_DEBUG, "TLS: using phase2 config options");
 		eap_tls_params_from_conf2(params, config);
 	} else {
@@ -223,12 +250,6 @@ static int eap_tls_init_connection(struct eap_sm *sm,
 {
 	int res;
 
-	if (config->ocsp)
-		params->flags |= TLS_CONN_REQUEST_OCSP;
-	if (config->ocsp >= 2)
-		params->flags |= TLS_CONN_REQUIRE_OCSP;
-	if (config->ocsp == 3)
-		params->flags |= TLS_CONN_REQUIRE_OCSP_ALL;
 	data->conn = tls_connection_init(data->ssl_ctx);
 	if (data->conn == NULL) {
 		wpa_printf(MSG_INFO, "SSL: Failed to initialize new TLS "
@@ -245,15 +266,15 @@ static int eap_tls_init_connection(struct eap_sm *sm,
 		 */
 		wpa_printf(MSG_INFO,
 			   "TLS: Bad PIN provided, requesting a new one");
-		os_free(config->pin);
-		config->pin = NULL;
+		os_free(config->cert.pin);
+		config->cert.pin = NULL;
 		eap_sm_request_pin(sm);
-		sm->ignore = TRUE;
+		sm->ignore = true;
 	} else if (res == TLS_SET_PARAMS_ENGINE_PRV_INIT_FAILED) {
 		wpa_printf(MSG_INFO, "TLS: Failed to initialize engine");
 	} else if (res == TLS_SET_PARAMS_ENGINE_PRV_VERIFY_FAILED) {
 		wpa_printf(MSG_INFO, "TLS: Failed to load private key");
-		sm->ignore = TRUE;
+		sm->ignore = true;
 	}
 	if (res) {
 		wpa_printf(MSG_INFO, "TLS: Failed to set TLS connection "
@@ -339,6 +360,8 @@ void eap_peer_tls_ssl_deinit(struct eap_sm *sm, struct eap_ssl_data *data)
  * @sm: Pointer to EAP state machine allocated with eap_peer_sm_init()
  * @data: Data for TLS processing
  * @label: Label string for deriving the keys, e.g., "client EAP encryption"
+ * @context: Optional extra upper-layer context (max len 2^16)
+ * @context_len: The length of the context value
  * @len: Length of the key material to generate (usually 64 for MSK)
  * Returns: Pointer to allocated key on success or %NULL on failure
  *
@@ -347,9 +370,12 @@ void eap_peer_tls_ssl_deinit(struct eap_sm *sm, struct eap_ssl_data *data)
  * different label to bind the key usage into the generated material.
  *
  * The caller is responsible for freeing the returned buffer.
+ *
+ * Note: To provide the RFC 5705 context, the context variable must be non-NULL.
  */
 u8 * eap_peer_tls_derive_key(struct eap_sm *sm, struct eap_ssl_data *data,
-			     const char *label, size_t len)
+			     const char *label, const u8 *context,
+			     size_t context_len, size_t len)
 {
 	u8 *out;
 
@@ -357,8 +383,8 @@ u8 * eap_peer_tls_derive_key(struct eap_sm *sm, struct eap_ssl_data *data,
 	if (out == NULL)
 		return NULL;
 
-	if (tls_connection_export_key(data->ssl_ctx, data->conn, label, out,
-				      len)) {
+	if (tls_connection_export_key(data->ssl_ctx, data->conn, label,
+				      context, context_len, out, len)) {
 		os_free(out);
 		return NULL;
 	}
@@ -387,11 +413,28 @@ u8 * eap_peer_tls_derive_session_id(struct eap_sm *sm,
 	struct tls_random keys;
 	u8 *out;
 
-	if (eap_type == EAP_TYPE_TLS && data->tls_v13) {
-		*len = 64;
-		return eap_peer_tls_derive_key(sm, data,
-					       "EXPORTER_EAP_TLS_Session-Id",
-					       64);
+	if (data->tls_v13) {
+		u8 *id, *method_id;
+		const u8 context[] = { eap_type };
+
+		/* Session-Id = <EAP-Type> || Method-Id
+		 * Method-Id = TLS-Exporter("EXPORTER_EAP_TLS_Method-Id",
+		 *                          Type-Code, 64)
+		 */
+		*len = 1 + 64;
+		id = os_malloc(*len);
+		if (!id)
+			return NULL;
+		method_id = eap_peer_tls_derive_key(
+			sm, data, "EXPORTER_EAP_TLS_Method-Id", context, 1, 64);
+		if (!method_id) {
+			os_free(id);
+			return NULL;
+		}
+		id[0] = eap_type;
+		os_memcpy(id + 1, method_id, 64);
+		os_free(method_id);
+		return id;
 	}
 
 	if (tls_connection_get_random(sm->ssl_ctx, data->conn, &keys) ||
@@ -578,7 +621,8 @@ static int eap_tls_process_input(struct eap_sm *sm, struct eap_ssl_data *data,
  * @out_data: Buffer for returning the allocated output buffer
  * Returns: ret (0 or 1) on success, -1 on failure
  */
-static int eap_tls_process_output(struct eap_ssl_data *data, EapType eap_type,
+static int eap_tls_process_output(struct eap_ssl_data *data,
+				  enum eap_type eap_type,
 				  int peap_version, u8 id, int ret,
 				  struct wpabuf **out_data)
 {
@@ -676,7 +720,7 @@ static int eap_tls_process_output(struct eap_ssl_data *data, EapType eap_type,
  * the tunneled data is used.
  */
 int eap_peer_tls_process_helper(struct eap_sm *sm, struct eap_ssl_data *data,
-				EapType eap_type, int peap_version,
+				enum eap_type eap_type, int peap_version,
 				u8 id, const struct wpabuf *in_data,
 				struct wpabuf **out_data)
 {
@@ -768,7 +812,7 @@ int eap_peer_tls_process_helper(struct eap_sm *sm, struct eap_ssl_data *data,
  * @peap_version: Version number for EAP-PEAP/TTLS
  * Returns: Pointer to the allocated ACK frame or %NULL on failure
  */
-struct wpabuf * eap_peer_tls_build_ack(u8 id, EapType eap_type,
+struct wpabuf * eap_peer_tls_build_ack(u8 id, enum eap_type eap_type,
 				       int peap_version)
 {
 	struct wpabuf *resp;
@@ -858,7 +902,7 @@ int eap_peer_tls_status(struct eap_sm *sm, struct eap_ssl_data *data,
  */
 const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 				     struct eap_ssl_data *data,
-				     EapType eap_type,
+				     enum eap_type eap_type,
 				     struct eap_method_ret *ret,
 				     const struct wpabuf *reqData,
 				     size_t *len, u8 *flags)
@@ -869,7 +913,7 @@ const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 
 	if (tls_get_errors(data->ssl_ctx)) {
 		wpa_printf(MSG_INFO, "SSL: TLS errors detected");
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
@@ -885,14 +929,14 @@ const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 		pos = eap_hdr_validate(EAP_VENDOR_IETF, eap_type, reqData,
 				       &left);
 	if (pos == NULL) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 	if (left == 0) {
 		wpa_printf(MSG_DEBUG, "SSL: Invalid TLS message: no Flags "
 			   "octet included");
 		if (!sm->workaround) {
-			ret->ignore = TRUE;
+			ret->ignore = true;
 			return NULL;
 		}
 
@@ -910,7 +954,7 @@ const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 		if (left < 4) {
 			wpa_printf(MSG_INFO, "SSL: Short frame with TLS "
 				   "length");
-			ret->ignore = TRUE;
+			ret->ignore = true;
 			return NULL;
 		}
 		tls_msg_len = WPA_GET_BE32(pos);
@@ -929,15 +973,15 @@ const u8 * eap_peer_tls_process_init(struct eap_sm *sm,
 			wpa_printf(MSG_INFO, "SSL: TLS Message Length (%d "
 				   "bytes) smaller than this fragment (%d "
 				   "bytes)", (int) tls_msg_len, (int) left);
-			ret->ignore = TRUE;
+			ret->ignore = true;
 			return NULL;
 		}
 	}
 
-	ret->ignore = FALSE;
+	ret->ignore = false;
 	ret->methodState = METHOD_MAY_CONT;
 	ret->decision = DECISION_FAIL;
-	ret->allowNotifications = TRUE;
+	ret->allowNotifications = true;
 
 	*len = left;
 	return pos;
@@ -1015,7 +1059,7 @@ int eap_peer_tls_decrypt(struct eap_sm *sm, struct eap_ssl_data *data,
  * Returns: 0 on success, -1 on failure
  */
 int eap_peer_tls_encrypt(struct eap_sm *sm, struct eap_ssl_data *data,
-			 EapType eap_type, int peap_version, u8 id,
+			 enum eap_type eap_type, int peap_version, u8 id,
 			 const struct wpabuf *in_data,
 			 struct wpabuf **out_data)
 {
@@ -1051,17 +1095,21 @@ int eap_peer_tls_encrypt(struct eap_sm *sm, struct eap_ssl_data *data,
 int eap_peer_select_phase2_methods(struct eap_peer_config *config,
 				   const char *prefix,
 				   struct eap_method_type **types,
-				   size_t *num_types)
+				   size_t *num_types, int use_machine_cred)
 {
 	char *start, *pos, *buf;
 	struct eap_method_type *methods = NULL, *_methods;
 	u32 method;
 	size_t num_methods = 0, prefix_len;
+	const char *phase2;
 
-	if (config == NULL || config->phase2 == NULL)
+	if (!config)
+		goto get_defaults;
+	phase2 = use_machine_cred ? config->machine_phase2 : config->phase2;
+	if (!phase2)
 		goto get_defaults;
 
-	start = buf = os_strdup(config->phase2);
+	start = buf = os_strdup(phase2);
 	if (buf == NULL)
 		return -1;
 

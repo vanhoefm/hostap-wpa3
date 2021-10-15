@@ -26,22 +26,29 @@ while [ "$1" != "" ]; do
 	esac
 done
 
+JOBS=`nproc`
+if [ -z "$ABC" ]; then
+    JOBS=8
+fi
+
 echo "Building TNC testing tools"
 cd tnc
-make clean > /dev/null
-make QUIET=1 -j8
+make QUIET=1 -j$JOBS
 
 echo "Building wlantest"
 cd ../../../wlantest
-make clean > /dev/null
-make QUIET=1 -j8 > /dev/null
+make QUIET=1 -j$JOBS > /dev/null
+
+echo "Building hs20-osu-client"
+cd ../hs20/client/
+make QUIET=1 CONFIG_NO_BROWSER=1
 
 echo "Building hostapd"
-cd ../hostapd
+cd ../../hostapd
 if [ ! -e .config -o $force_config -eq 1 ]; then
-    cp ../tests/hwsim/example-hostapd.config .config
-else
-    echo "hostapd config file exists"
+    if ! cmp ../tests/hwsim/example-hostapd.config .config >/dev/null 2>&1 ; then
+      cp ../tests/hwsim/example-hostapd.config .config
+    fi
 fi
 
 if [ $use_lcov -eq 1 ]; then
@@ -52,15 +59,14 @@ if [ $use_lcov -eq 1 ]; then
     fi
 fi
 
-make clean > /dev/null
-make QUIET=1 -j8 hostapd hostapd_cli hlr_auc_gw
+make QUIET=1 -j$JOBS hostapd hostapd_cli hlr_auc_gw
 
 echo "Building wpa_supplicant"
 cd ../wpa_supplicant
 if [ ! -e .config -o $force_config -eq 1 ]; then
-    cp ../tests/hwsim/example-wpa_supplicant.config .config
-else
-    echo "wpa_supplicant config file exists"
+    if ! cmp ../tests/hwsim/example-wpa_supplicant.config .config >/dev/null 2>&1 ; then
+      cp ../tests/hwsim/example-wpa_supplicant.config .config
+    fi
 fi
 
 if [ $use_lcov -eq 1 ]; then
@@ -71,8 +77,7 @@ if [ $use_lcov -eq 1 ]; then
     fi
 fi
 
-make clean > /dev/null
 if [ -z $FIPSLD_CC ]; then
 export FIPSLD_CC=gcc
 fi
-make QUIET=1 -j8
+make QUIET=1 -j$JOBS

@@ -122,7 +122,13 @@ if ! ./start.sh $VM $VALGRIND $TRACE channels=$NUM_CH; then
 	exit 1
 fi
 
-sudo ./run-tests.py -D --logdir "$LOGDIR" $TRACE_ARGS -q $DB $RUN_TEST_ARGS || errors=1
+# Only use sudo if not already root.
+if [ "$(id -u)" != 0 ]; then
+	SUDO=sudo
+else
+	SUDO=
+fi
+${SUDO} ./run-tests.py -D --logdir "$LOGDIR" $TRACE_ARGS -q $DB $RUN_TEST_ARGS || errors=1
 
 ./stop.sh
 
@@ -134,6 +140,11 @@ if [ ! -z "$VALGRIND" ] ; then
     fi
 fi
 
+if tail -100 $LOGDIR/auth_serv | grep -q MEMLEAK; then
+    echo "Mark as failed due to authentication server memory leak"
+    errors=1
+fi
+
 if [ ! -z "$CODECOV" ] ; then
 	lcov -q --capture --directory ../../wpa_supplicant --output-file $LOGDIR/wpas_lcov.info
 	genhtml -q $LOGDIR/wpas_lcov.info --output-directory $LOGDIR/wpas_lcov
@@ -142,7 +153,9 @@ if [ ! -z "$CODECOV" ] ; then
 fi
 
 if [ $errors -gt 0 ]; then
-    tar czf /tmp/hwsim-tests-$DATE-FAILED$SUFFIX.tar.gz $LOGDIR/
+    if [ -z $VM ]; then
+	tar czf /tmp/hwsim-tests-$DATE-FAILED$SUFFIX.tar.gz $LOGDIR/
+    fi
     exit 1
 fi
 

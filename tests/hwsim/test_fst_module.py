@@ -84,7 +84,7 @@ bad_param_names = ("None",
                    "Bad fsts_id")
 
 def fst_start_session(apdev, test_params, bad_param_type, start_on_ap,
-                      peer_addr = None):
+                      peer_addr=None):
     """This function makes the necessary preparations and the adds and sets a
     session using either correct or incorrect parameters depending on the value
     of bad_param_type. If the call ends as expected (with session being
@@ -142,7 +142,7 @@ def fst_start_session(apdev, test_params, bad_param_type, start_on_ap,
                 sid = '-1'
             initiator.set_fst_parameters(llt=llt)
             initiator.configure_session(sid, new_iface, old_iface)
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("Cannot add FST session with groupid"):
             if bad_param_type == bad_param_group_id or bad_param_type == bad_param_session_add_no_params:
                 bad_parameter_detected = True
@@ -238,7 +238,7 @@ def fst_initiate_session(apdev, test_params, bad_param_type, init_on_ap):
             initiator.wait_for_session_event(5, [], ["EVENT_FST_SESSION_STATE"])
             setup_event = responder.wait_for_session_event(5, [],
                                                            ['EVENT_FST_SETUP'])
-            if not 'id' in setup_event:
+            if 'id' not in setup_event:
                 raise Exception("No session id in FST setup event")
             responder.send_session_setup_response(str(setup_event['id']),
                                                   "reject")
@@ -302,7 +302,7 @@ def fst_initiate_session(apdev, test_params, bad_param_type, init_on_ap):
             bad_parameter_detected = True
         else:
             initiator.initiate_session(sid, "accept")
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("Cannot initiate fst session"):
             if bad_param_type != bad_param_none:
                 bad_parameter_detected = True
@@ -354,7 +354,7 @@ def fst_transfer_session(apdev, test_params, bad_param_type, init_on_ap,
             responder = ap1
             new_iface = sta2.ifname()
             new_peer_addr = sta2.get_actual_peer_addr()
-        initiator.add_peer(responder, new_peer_addr = new_peer_addr)
+        initiator.add_peer(responder, new_peer_addr=new_peer_addr)
         sid = initiator.add_session()
         initiator.configure_session(sid, new_iface)
         if bad_param_type != bad_param_session_transfer_setup_skipped:
@@ -364,7 +364,7 @@ def fst_transfer_session(apdev, test_params, bad_param_type, init_on_ap,
         elif bad_param_type == bad_param_session_transfer_bad_session_id:
             sid = '-1'
         initiator.transfer_session(sid)
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("Cannot transfer fst session"):
             if bad_param_type != bad_param_none:
                 bad_parameter_detected = True
@@ -413,7 +413,7 @@ def fst_tear_down_session(apdev, test_params, bad_param_type, init_on_ap):
             responder = ap1
             new_iface = sta2.ifname()
             new_peer_addr = sta2.get_actual_peer_addr()
-        initiator.add_peer(responder, new_peer_addr = new_peer_addr)
+        initiator.add_peer(responder, new_peer_addr=new_peer_addr)
         sid = initiator.add_session()
         initiator.configure_session(sid, new_iface)
         if bad_param_type != bad_param_session_teardown_setup_skipped:
@@ -427,7 +427,7 @@ def fst_tear_down_session(apdev, test_params, bad_param_type, init_on_ap):
             elif bad_param_type == bad_param_session_teardown_bad_session_id:
                 sid = '-1'
             initiator.teardown_session(sid)
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("Cannot tear down fst session"):
             if (bad_param_type == bad_param_session_teardown_no_params or
                 bad_param_type == bad_param_session_teardown_bad_session_id or
@@ -492,7 +492,7 @@ def fst_remove_session(apdev, test_params, remove_session_scenario, init_on_ap):
             responder = ap1
             new_iface = sta2.ifname()
             new_peer_addr = sta2.get_actual_peer_addr()
-        initiator.add_peer(responder, new_peer_addr = new_peer_addr)
+        initiator.add_peer(responder, new_peer_addr=new_peer_addr)
         sid = initiator.add_session()
         initiator.configure_session(sid, new_iface)
         if remove_session_scenario != remove_scenario_no_params:
@@ -503,7 +503,7 @@ def fst_remove_session(apdev, test_params, remove_session_scenario, init_on_ap):
         elif remove_session_scenario == remove_scenario_bad_session_id:
             sid = '-1'
         initiator.remove_session(sid)
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("Cannot remove fst session"):
             if (remove_session_scenario == remove_scenario_no_params or
                 remove_session_scenario == remove_scenario_bad_session_id):
@@ -544,7 +544,7 @@ frame_type_names = ("Session request",
                     "Ack response",
                     "Tear down")
 
-def fst_send_unexpected_frame(apdev, test_params, frame_type, send_from_ap, additional_param = ''):
+def fst_send_unexpected_frame(apdev, test_params, frame_type, send_from_ap, additional_param=''):
     """This function creates two pairs of APs and stations, makes them connect
     and then causes one side to send an unexpected FST frame of the specified
     type to the other. The other side should then identify and ignore the
@@ -568,8 +568,8 @@ def fst_send_unexpected_frame(apdev, test_params, frame_type, send_from_ap, addi
             receiver = ap1
             new_iface = sta2.ifname()
             new_peer_addr = sta2.get_actual_peer_addr()
-        sender.add_peer(receiver, new_peer_addr = new_peer_addr)
-        sid=sender.add_session()
+        sender.add_peer(receiver, new_peer_addr=new_peer_addr)
+        sid = sender.add_session()
         sender.configure_session(sid, new_iface)
         if frame_type == frame_type_session_request:
             sender.send_session_setup_request(sid)
@@ -592,7 +592,7 @@ def fst_send_unexpected_frame(apdev, test_params, frame_type, send_from_ap, addi
             #fsts_id doesn't matter, no actual session exists
             sender.send_test_tear_down('0')
             receiver.wait_for_session_event(5)
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("No FST-EVENT-SESSION received"):
             if frame_type != frame_type_session_request:
                 frame_receive_timeout = True
@@ -663,7 +663,7 @@ def fst_bad_transfer(apdev, test_params, bad_scenario_type, init_on_ap):
             responder = ap1
             new_iface = sta2.ifname()
             new_peer_addr = sta2.get_actual_peer_addr()
-        initiator.add_peer(responder, new_peer_addr = new_peer_addr)
+        initiator.add_peer(responder, new_peer_addr=new_peer_addr)
         sid = initiator.add_session()
         initiator.configure_session(sid, new_iface)
         if (bad_scenario_type != bad_scenario_ack_req_session_not_set_up and
@@ -672,7 +672,7 @@ def fst_bad_transfer(apdev, test_params, bad_scenario_type, init_on_ap):
                 bad_scenario_type != bad_scenario_ack_resp_session_not_established_init_side and
                 bad_scenario_type != bad_scenario_ack_req_session_not_established_resp_side and
                 bad_scenario_type != bad_scenario_ack_resp_session_not_established_resp_side):
-                response =  "accept"
+                response = "accept"
             else:
                 response = ''
             initiator.initiate_session(sid, response)
@@ -716,7 +716,7 @@ def fst_bad_transfer(apdev, test_params, bad_scenario_type, init_on_ap):
             responder.wait_for_session_event(5, ["EVENT_FST_SESSION_STATE"])
         else:
             raise Exception("Unknown bad scenario identifier")
-    except Exception, e:
+    except Exception as e:
         if e.args[0].startswith("No FST-EVENT-SESSION received"):
             bad_parameter_detected = True
         if not bad_parameter_detected:
@@ -739,7 +739,7 @@ def test_fst_sta_connect_to_non_fst_ap(dev, apdev, test_params):
     """FST STA connecting to non-FST AP"""
     ap1, ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             orig_sta1_mbies = sta1.get_local_mbies()
             orig_sta2_mbies = sta2.get_local_mbies()
@@ -753,7 +753,7 @@ def test_fst_sta_connect_to_non_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -773,7 +773,7 @@ def test_fst_sta_connect_to_fst_ap(dev, apdev, test_params):
         res_sta2_mbies = sta2.get_local_mbies()
         if res_sta2_mbies == orig_sta2_mbies:
             raise Exception("Failure. MB IEs have not been updated")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -792,7 +792,7 @@ def test_fst_ap_connect_to_fst_sta(dev, apdev, test_params):
         res_ap_mbies = ap1.get_local_mbies()
         if res_ap_mbies != orig_ap_mbies:
             raise Exception("Failure. MB IEs have been unexpectedly updated on the AP")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -811,7 +811,7 @@ def test_fst_ap_connect_to_non_fst_sta(dev, apdev, test_params):
         res_ap_mbies = ap2.get_local_mbies()
         if res_ap_mbies != orig_ap_mbies:
             raise Exception("Failure. MB IEs have been unexpectedly updated on the AP")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -822,7 +822,7 @@ def test_fst_second_sta_connect_to_non_fst_ap(dev, apdev, test_params):
     """FST STA 2nd connecting to non-FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             vals = sta1.scan(freq=fst_test_common.fst_test_def_freq_a)
             sta1.connect(fst_ap1, key_mgmt="NONE", scan_freq=fst_test_common.fst_test_def_freq_a)
@@ -839,7 +839,7 @@ def test_fst_second_sta_connect_to_non_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -852,7 +852,7 @@ def test_fst_second_sta_connect_to_fst_ap(dev, apdev, test_params):
     """FST STA 2nd connecting to FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             sta2.connect_to_external_ap(non_fst_ap, ssid="non_fst_11g",
                                         key_mgmt="NONE", scan_freq='2412')
@@ -869,7 +869,7 @@ def test_fst_second_sta_connect_to_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -882,7 +882,7 @@ def test_fst_disconnect_1_of_2_stas_from_non_fst_ap(dev, apdev, test_params):
     """FST disconnect 1 of 2 STAs from non-FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             vals = sta1.scan(freq=fst_test_common.fst_test_def_freq_a)
             sta1.connect(fst_ap1, key_mgmt="NONE", scan_freq=fst_test_common.fst_test_def_freq_a)
@@ -900,7 +900,7 @@ def test_fst_disconnect_1_of_2_stas_from_non_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -913,7 +913,7 @@ def test_fst_disconnect_1_of_2_stas_from_fst_ap(dev, apdev, test_params):
     """FST disconnect 1 of 2 STAs from FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             vals = sta1.scan(freq=fst_test_common.fst_test_def_freq_a)
             sta1.connect(fst_ap1, key_mgmt="NONE", scan_freq=fst_test_common.fst_test_def_freq_a)
@@ -931,7 +931,7 @@ def test_fst_disconnect_1_of_2_stas_from_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -944,7 +944,7 @@ def test_fst_disconnect_2_of_2_stas_from_non_fst_ap(dev, apdev, test_params):
     """FST disconnect 2 of 2 STAs from non-FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g" })
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             vals = sta1.scan(freq=fst_test_common.fst_test_def_freq_a)
             sta1.connect(fst_ap1, key_mgmt="NONE", scan_freq=fst_test_common.fst_test_def_freq_a)
@@ -964,7 +964,7 @@ def test_fst_disconnect_2_of_2_stas_from_non_fst_ap(dev, apdev, test_params):
                 res_sta1_mbies.startswith("FAIL") or
                 res_sta2_mbies.startswith("FAIL")):
                 raise Exception("Failure. MB IEs must be present on the stations")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -977,7 +977,7 @@ def test_fst_disconnect_2_of_2_stas_from_fst_ap(dev, apdev, test_params):
     """FST disconnect 2 of 2 STAs from FST AP"""
     fst_ap1, fst_ap2, sta1, sta2 = fst_module_aux.start_two_ap_sta_pairs(apdev)
     with HWSimRadio() as (radio, iface):
-        non_fst_ap = hostapd.add_ap(iface, { "ssid": "non_fst_11g"})
+        non_fst_ap = hostapd.add_ap(iface, {"ssid": "non_fst_11g"})
         try:
             vals = sta1.scan(freq=fst_test_common.fst_test_def_freq_a)
             sta1.connect(fst_ap1, key_mgmt="NONE", scan_freq=fst_test_common.fst_test_def_freq_a)
@@ -1014,7 +1014,7 @@ def test_fst_disconnect_2_of_2_stas_from_fst_ap(dev, apdev, test_params):
                 addr_sta2_mbie1 != addr_sta2_mbie2 or
                 addr_sta2_mbie1 != addr_sta1_str):
                 raise Exception("Failure. STA Address in MB IEs should have been same as the other STA's")
-        except Exception, e:
+        except Exception as e:
             logger.info(e)
             raise
         finally:
@@ -1045,7 +1045,7 @@ def test_fst_disconnect_non_fst_sta(dev, apdev, test_params):
         res_ap_mbies = ap2.get_local_mbies()
         if res_ap_mbies != orig_ap_mbies:
             raise Exception("Failure. MB IEs have been unexpectedly updated on the AP")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -1076,7 +1076,7 @@ def test_fst_disconnect_fst_sta(dev, apdev, test_params):
         res_ap_mbies = ap2.get_local_mbies()
         if res_ap_mbies != orig_ap_mbies:
             raise Exception("Failure. MB IEs have been unexpectedly updated on the AP")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -1137,7 +1137,7 @@ def test_fst_dynamic_iface_attach(dev, apdev, test_params):
             res_sta2_mbies.startswith("FAIL") or
             res_ap2_mbies.startswith("FAIL")):
             raise Exception("Failure. MB IEs should have appeared on the station and on the AP")
-    except Exception, e:
+    except Exception as e:
         logger.info(e)
         raise
     finally:
@@ -1444,51 +1444,51 @@ def test_fst_ap_ctrl_iface(dev, apdev, test_params):
         if len(res) != 1 + start_num_groups:
             raise Exception("Unexpected number of groups")
 
-        tests = [ "LIST_IFACES unknown",
-                  "LIST_IFACES     unknown2",
-                  "SESSION_GET 12345678",
-                  "SESSION_SET " + sid + " unknown=foo",
-                  "SESSION_RESPOND 12345678 foo",
-                  "SESSION_RESPOND " + sid,
-                  "SESSION_RESPOND " + sid + " foo",
-                  "TEST_REQUEST foo",
-                  "TEST_REQUEST SEND_SETUP_REQUEST",
-                  "TEST_REQUEST SEND_SETUP_REQUEST foo",
-                  "TEST_REQUEST SEND_SETUP_RESPONSE",
-                  "TEST_REQUEST SEND_SETUP_RESPONSE foo",
-                  "TEST_REQUEST SEND_ACK_REQUEST",
-                  "TEST_REQUEST SEND_ACK_REQUEST foo",
-                  "TEST_REQUEST SEND_ACK_RESPONSE",
-                  "TEST_REQUEST SEND_ACK_RESPONSE foo",
-                  "TEST_REQUEST SEND_TEAR_DOWN",
-                  "TEST_REQUEST SEND_TEAR_DOWN foo",
-                  "TEST_REQUEST GET_FSTS_ID",
-                  "TEST_REQUEST GET_FSTS_ID foo",
-                  "TEST_REQUEST GET_LOCAL_MBIES",
-                  "TEST_REQUEST GET_LOCAL_MBIES foo",
-                  "GET_PEER_MBIES",
-                  "GET_PEER_MBIES ",
-                  "GET_PEER_MBIES unknown",
-                  "GET_PEER_MBIES unknown unknown",
-                  "GET_PEER_MBIES unknown  " + initiator.get_new_peer_addr(),
-                  "GET_PEER_MBIES " + initiator.ifname() + " 01:ff:ff:ff:ff:ff",
-                  "GET_PEER_MBIES " + initiator.ifname() + " 00:ff:ff:ff:ff:ff",
-                  "GET_PEER_MBIES " + initiator.ifname() + " 00:00:00:00:00:00",
-                  "IFACE_PEERS",
-                  "IFACE_PEERS ",
-                  "IFACE_PEERS unknown",
-                  "IFACE_PEERS unknown unknown",
-                  "IFACE_PEERS " + initiator.fst_group,
-                  "IFACE_PEERS " + initiator.fst_group + " unknown" ]
+        tests = ["LIST_IFACES unknown",
+                 "LIST_IFACES     unknown2",
+                 "SESSION_GET 12345678",
+                 "SESSION_SET " + sid + " unknown=foo",
+                 "SESSION_RESPOND 12345678 foo",
+                 "SESSION_RESPOND " + sid,
+                 "SESSION_RESPOND " + sid + " foo",
+                 "TEST_REQUEST foo",
+                 "TEST_REQUEST SEND_SETUP_REQUEST",
+                 "TEST_REQUEST SEND_SETUP_REQUEST foo",
+                 "TEST_REQUEST SEND_SETUP_RESPONSE",
+                 "TEST_REQUEST SEND_SETUP_RESPONSE foo",
+                 "TEST_REQUEST SEND_ACK_REQUEST",
+                 "TEST_REQUEST SEND_ACK_REQUEST foo",
+                 "TEST_REQUEST SEND_ACK_RESPONSE",
+                 "TEST_REQUEST SEND_ACK_RESPONSE foo",
+                 "TEST_REQUEST SEND_TEAR_DOWN",
+                 "TEST_REQUEST SEND_TEAR_DOWN foo",
+                 "TEST_REQUEST GET_FSTS_ID",
+                 "TEST_REQUEST GET_FSTS_ID foo",
+                 "TEST_REQUEST GET_LOCAL_MBIES",
+                 "TEST_REQUEST GET_LOCAL_MBIES foo",
+                 "GET_PEER_MBIES",
+                 "GET_PEER_MBIES ",
+                 "GET_PEER_MBIES unknown",
+                 "GET_PEER_MBIES unknown unknown",
+                 "GET_PEER_MBIES unknown  " + initiator.get_new_peer_addr(),
+                 "GET_PEER_MBIES " + initiator.ifname() + " 01:ff:ff:ff:ff:ff",
+                 "GET_PEER_MBIES " + initiator.ifname() + " 00:ff:ff:ff:ff:ff",
+                 "GET_PEER_MBIES " + initiator.ifname() + " 00:00:00:00:00:00",
+                 "IFACE_PEERS",
+                 "IFACE_PEERS ",
+                 "IFACE_PEERS unknown",
+                 "IFACE_PEERS unknown unknown",
+                 "IFACE_PEERS " + initiator.fst_group,
+                 "IFACE_PEERS " + initiator.fst_group + " unknown"]
         for t in tests:
             if "FAIL" not in initiator.grequest("FST-MANAGER " + t):
                 raise Exception("Unexpected response for invalid FST-MANAGER command " + t)
         if "UNKNOWN FST COMMAND" not in initiator.grequest("FST-MANAGER unknown"):
             raise Exception("Unexpected response for unknown FST-MANAGER command")
 
-        tests = [ "FST-DETACH", "FST-DETACH ", "FST-DETACH unknown",
-                  "FST-ATTACH", "FST-ATTACH ", "FST-ATTACH unknown",
-                  "FST-ATTACH unknown unknown" ]
+        tests = ["FST-DETACH", "FST-DETACH ", "FST-DETACH unknown",
+                 "FST-ATTACH", "FST-ATTACH ", "FST-ATTACH unknown",
+                 "FST-ATTACH unknown unknown"]
         for t in tests:
             if "FAIL" not in initiator.grequest(t):
                 raise Exception("Unexpected response for invalid command " + t)
@@ -1498,13 +1498,13 @@ def test_fst_ap_ctrl_iface(dev, apdev, test_params):
             ap1.send_iface_attach_request(ap1.iface, ap1.fst_group,
                                           ap1.fst_llt, ap1.fst_pri)
             raise Exception("Duplicate FST-ATTACH succeeded")
-        except Exception, e:
+        except Exception as e:
             if not str(e).startswith("Cannot attach"):
                 raise
 
         try:
             ap1.get_fsts_id_by_sid("123")
-        except Exception, e:
+        except Exception as e:
             if not str(e).startswith("Cannot get fsts_id for sid"):
                 raise
     finally:
@@ -1523,6 +1523,7 @@ def test_fst_ap_start_session_oom(dev, apdev, test_params):
         run_fst_ap_start_session_oom(apdev, ap1)
     finally:
         ap1.stop()
+        fst_test_common.fst_clear_regdom()
 
 def run_fst_ap_start_session_oom(apdev, ap1):
     with alloc_fail(ap1, 1, "fst_iface_create"):
@@ -1822,7 +1823,7 @@ FST_ACTION_ON_CHANNEL_TUNNEL = 5
 def hostapd_tx_and_status(hapd, msg):
     hapd.set("ext_mgmt_frame_handling", "1")
     hapd.mgmt_tx(msg)
-    ev = hapd.wait_event([ "MGMT-TX-STATUS" ], timeout=1)
+    ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=1)
     if ev is None or "ok=1" not in ev:
         raise Exception("No ACK")
     hapd.set("ext_mgmt_frame_handling", "0")
@@ -2066,7 +2067,7 @@ def test_fst_ack_response_proto(dev, apdev, test_params):
         s = sta1.grequest("FST-MANAGER SESSION_INITIATE "+ sid)
         if not s.startswith('OK'):
             raise Exception("Cannot initiate fst session: %s" % s)
-        ev = sta1.peer_obj.wait_gevent([ "FST-EVENT-SESSION" ], timeout=5)
+        ev = sta1.peer_obj.wait_gevent(["FST-EVENT-SESSION"], timeout=5)
         if ev is None:
             raise Exception("No FST-EVENT-SESSION received")
         event = fst_module_aux.parse_fst_session_event(ev)
@@ -2102,7 +2103,7 @@ def test_fst_ack_response_proto(dev, apdev, test_params):
         msg['payload'] = struct.pack("<BB", ACTION_CATEG_FST,
                                      FST_ACTION_ACK_RESPONSE)
         hapd.mgmt_tx(msg)
-        ev = hapd.wait_event([ "MGMT-TX-STATUS" ], timeout=1)
+        ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=1)
         if ev is None or "ok=1" not in ev:
             raise Exception("No ACK")
 
@@ -2137,6 +2138,7 @@ def test_fst_ap_config_oom(dev, apdev, test_params):
         # This is allowed to complete currently
 
     ap1.stop()
+    fst_test_common.fst_clear_regdom()
 
 def test_fst_send_oom(dev, apdev, test_params):
     """FST send action OOM"""
@@ -2167,7 +2169,7 @@ def test_fst_send_oom(dev, apdev, test_params):
         if not res.startswith("OK"):
             raise Exception("SESSION_INITIATE failed")
 
-        tests = [ "", "foo", sid, sid + " foo", sid + " foo=bar" ]
+        tests = ["", "foo", sid, sid + " foo", sid + " foo=bar"]
         for t in tests:
             res = initiator.grequest("FST-MANAGER SESSION_SET " + t)
             if not res.startswith("FAIL"):
@@ -2231,7 +2233,7 @@ def test_fst_session_respond_fail(dev, apdev, test_params):
         sta1.send_session_setup_request(sid)
         sta1.wait_for_session_event(5, [], ["EVENT_FST_SESSION_STATE"])
         ev = ap1.wait_for_session_event(5, [], ['EVENT_FST_SETUP'])
-        if not 'id' in ev:
+        if 'id' not in ev:
             raise Exception("No session id in FST setup event")
         # Disconnect STA to make SESSION_RESPOND fail due to no peer found
         sta = sta1.get_instance()
@@ -2262,7 +2264,7 @@ def fst_attach_ap(dev, ifname, group):
     ev = dev.wait_event(['FST-EVENT-IFACE'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-IFACE attached (AP)")
-    for t in [ "attached", "ifname=" + ifname, "group=" + group ]:
+    for t in ["attached", "ifname=" + ifname, "group=" + group]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-IFACE data (AP): " + ev)
 
@@ -2272,7 +2274,7 @@ def fst_attach_sta(dev, ifname, group):
     ev = dev.wait_global_event(['FST-EVENT-IFACE'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-IFACE attached (STA)")
-    for t in [ "attached", "ifname=" + ifname, "group=" + group ]:
+    for t in ["attached", "ifname=" + ifname, "group=" + group]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-IFACE data (STA): " + ev)
 
@@ -2282,7 +2284,7 @@ def fst_detach_ap(dev, ifname, group):
     ev = dev.wait_event(['FST-EVENT-IFACE'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-IFACE detached (AP) for " + ifname)
-    for t in [ "detached", "ifname=" + ifname, "group=" + group ]:
+    for t in ["detached", "ifname=" + ifname, "group=" + group]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-IFACE data (AP): " + ev)
 
@@ -2293,7 +2295,7 @@ def fst_detach_sta(dev, ifname, group):
     ev = dev.wait_global_event(['FST-EVENT-IFACE'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-IFACE detached (STA) for " + ifname)
-    for t in [ "detached", "ifname=" + ifname, "group=" + group ]:
+    for t in ["detached", "ifname=" + ifname, "group=" + group]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-IFACE data (STA): " + ev)
 
@@ -2301,7 +2303,7 @@ def fst_wait_event_peer_ap(dev, event, ifname, addr):
     ev = dev.wait_event(['FST-EVENT-PEER'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-PEER connected (AP)")
-    for t in [ " " + event + " ", "ifname=" + ifname, "peer_addr=" + addr ]:
+    for t in [" " + event + " ", "ifname=" + ifname, "peer_addr=" + addr]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-PEER data (AP): " + ev)
 
@@ -2309,7 +2311,7 @@ def fst_wait_event_peer_sta(dev, event, ifname, addr):
     ev = dev.wait_global_event(['FST-EVENT-PEER'], timeout=5)
     if ev is None:
         raise Exception("No FST-EVENT-PEER connected (STA)")
-    for t in [ " " + event + " ", "ifname=" + ifname, "peer_addr=" + addr ]:
+    for t in [" " + event + " ", "ifname=" + ifname, "peer_addr=" + addr]:
         if t not in ev:
             raise Exception("Unexpected FST-EVENT-PEER data (STA): " + ev)
 
@@ -2334,8 +2336,8 @@ def fst_start_and_connect(apdev, group, sgroup):
     if "OK" not in hglobal.request("FST-MANAGER TEST_REQUEST IS_SUPPORTED"):
         raise HwsimSkip("No FST testing support")
 
-    params = { "ssid": "fst_11a", "hw_mode": "a", "channel": "36",
-               "country_code": "US" }
+    params = {"ssid": "fst_11a", "hw_mode": "a", "channel": "36",
+              "country_code": "US"}
     hapd = hostapd.add_ap(apdev[0], params)
 
     fst_attach_ap(hglobal, apdev[0]['ifname'], group)
@@ -2344,8 +2346,8 @@ def fst_start_and_connect(apdev, group, sgroup):
     if "FAIL" not in hglobal.request(cmd):
         raise Exception("Duplicated FST-ATTACH (AP) accepted")
 
-    params = { "ssid": "fst_11g", "hw_mode": "g", "channel": "1",
-               "country_code": "US" }
+    params = {"ssid": "fst_11g", "hw_mode": "g", "channel": "1",
+              "country_code": "US"}
     hapd2 = hostapd.add_ap(apdev[1], params)
     fst_attach_ap(hglobal, apdev[1]['ifname'], group)
 
@@ -2535,7 +2537,7 @@ def _test_fst_setup_mbie_diff(dev, apdev, test_params):
         with alloc_fail(hapd, 1, "mb_ies_by_info"):
             fst_setup_req(wpas, hglobal, 5180, apdev[0]['bssid'], req, stie,
                           mbie, no_wait=True)
-    except HwsimSkip, e:
+    except HwsimSkip as e:
         # Skip exception to allow proper cleanup
         pass
 

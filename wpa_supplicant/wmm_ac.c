@@ -400,7 +400,7 @@ static int wmm_ac_ts_req_is_valid(struct wpa_supplicant *wpa_s,
 
 	req_ac = up_to_ac[params->user_priority];
 
-	/* Requested accesss category must have acm */
+	/* Requested access category must have acm */
 	if (!wpa_s->wmm_ac_assoc_info->ac_params[req_ac].acm) {
 		wpa_printf(MSG_DEBUG, "WMM AC: AC %d is not ACM", req_ac);
 		return 0;
@@ -471,13 +471,8 @@ static int wmm_ac_init(struct wpa_supplicant *wpa_s, const u8 *ies,
 		return -1;
 	}
 
-	if (!ies) {
-		wpa_printf(MSG_ERROR, "WMM AC: Missing IEs");
-		return -1;
-	}
-
-	if (!(wmm_params->info_bitmap & WMM_PARAMS_UAPSD_QUEUES_INFO)) {
-		wpa_printf(MSG_DEBUG, "WMM AC: Missing U-APSD configuration");
+	if (!ies || !(wmm_params->info_bitmap & WMM_PARAMS_UAPSD_QUEUES_INFO)) {
+		/* WMM AC not in use for this connection */
 		return -1;
 	}
 
@@ -522,7 +517,7 @@ static void wmm_ac_deinit(struct wpa_supplicant *wpa_s)
 	for (i = 0; i < WMM_AC_NUM; i++)
 		wmm_ac_del_ts(wpa_s, i, TS_DIR_IDX_ALL);
 
-	/* delete pending add_ts requset */
+	/* delete pending add_ts request */
 	wmm_ac_del_req(wpa_s, 1);
 
 	os_free(wpa_s->wmm_ac_assoc_info);

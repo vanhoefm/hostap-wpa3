@@ -945,10 +945,15 @@ u8 * eap_sim_parse_encr(const u8 *k_encr, const u8 *encr_data,
 	if (decrypted == NULL)
 		return NULL;
 
+#ifdef TEST_FUZZ
+		wpa_printf(MSG_INFO,
+			   "TEST: Skip AES-128-CBC decryption for fuzz testing");
+#else /* TEST_FUZZ */
 	if (aes_128_cbc_decrypt(k_encr, iv, decrypted, encr_data_len)) {
 		os_free(decrypted);
 		return NULL;
 	}
+#endif /* TEST_FUZZ */
 	wpa_hexdump(MSG_MSGDUMP, "EAP-SIM: Decrypted AT_ENCR_DATA",
 		    decrypted, encr_data_len);
 
@@ -1202,4 +1207,48 @@ void eap_sim_report_notification(void *msg_ctx, int notification, int aka)
 				   type, notification);
 		}
 	}
+}
+
+
+static const u8 * get_last_char(const u8 *val, size_t len, char c)
+{
+	while (len > 0) {
+		const u8 *pos = &val[len - 1];
+
+		if (*pos == (u8) c)
+			return pos;
+		len--;
+	}
+
+	return NULL;
+}
+
+
+int eap_sim_anonymous_username(const u8 *id, size_t id_len)
+{
+	static const char *anonymous_id_prefix = "anonymous@";
+	const u8 *decorated;
+	size_t anonymous_id_len = os_strlen(anonymous_id_prefix);
+
+	if (id_len > anonymous_id_len &&
+	    os_memcmp(id, anonymous_id_prefix, anonymous_id_len) == 0)
+		return 1; /* 'anonymous@realm' */
+
+	if (id_len > anonymous_id_len + 1 &&
+	    os_memcmp(id + 1, anonymous_id_prefix, anonymous_id_len) == 0)
+		return 1; /* 'Xanonymous@realm' where X is an EAP method code */
+
+	if (id_len > 1 && id[0] == '@')
+		return 1; /* '@realm' */
+
+	/* RFC 7542 decorated username, for example:
+	 * homerealm.example.org!anonymous@otherrealm.example.net */
+	decorated = get_last_char(id, id_len, '!');
+	if (decorated) {
+		decorated++;
+		return eap_sim_anonymous_username(decorated,
+						  id + id_len - decorated);
+	}
+
+	return 0;
 }

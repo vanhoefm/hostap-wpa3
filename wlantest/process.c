@@ -1,6 +1,6 @@
 /*
  * Received frame processing
- * Copyright (c) 2010, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2010-2019, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -161,7 +161,8 @@ static int rx_duplicate(struct wlantest *wt, const struct ieee80211_hdr *hdr,
 	else
 		seq_ctrl = &sta->seq_ctrl_to_sta[tid];
 
-	if ((fc & WLAN_FC_RETRY) && hdr->seq_ctrl == *seq_ctrl) {
+	if ((fc & WLAN_FC_RETRY) && hdr->seq_ctrl == *seq_ctrl &&
+	    !sta->allow_duplicate) {
 		u16 s = le_to_host16(hdr->seq_ctrl);
 		add_note(wt, MSG_MSGDUMP, "Ignore duplicated frame (seq=%u "
 			 "frag=%u A1=" MACSTR " A2=" MACSTR ")",
@@ -171,6 +172,7 @@ static int rx_duplicate(struct wlantest *wt, const struct ieee80211_hdr *hdr,
 	}
 
 	*seq_ctrl = hdr->seq_ctrl;
+	sta->allow_duplicate = 0;
 
 	return 0;
 }
@@ -275,6 +277,9 @@ void wlantest_process(struct wlantest *wt, const u8 *data, size_t len)
 	int rxflags = 0, txflags = 0, failed = 0, fcs = 0;
 	const u8 *frame, *fcspos;
 	size_t frame_len;
+
+	if (wt->ethernet)
+		return;
 
 	wpa_hexdump(MSG_EXCESSIVE, "Process data", data, len);
 

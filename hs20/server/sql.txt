@@ -24,6 +24,10 @@ CREATE TABLE sessions(
 	cert TEXT,
 	cert_pem TEXT,
 	mac_addr TEXT,
+	osu_user TEXT,
+	osu_password TEXT,
+	eap_method TEXT,
+	mobile_identifier_hash TEXT,
 	test TEXT
 );
 
@@ -57,6 +61,7 @@ CREATE TABLE users(
 	mac_addr TEXT,
 	last_msk TEXT,
 	polupd_done TEXT,
+	subrem TEXT
 );
 
 CREATE TABLE wildcards(
@@ -92,4 +97,12 @@ CREATE TABLE cert_enroll(
 	user TEXT,
 	realm TEXT,
 	serialnum TEXT
+);
+
+CREATE TABLE sim_provisioning(
+	mobile_identifier_hash TEXT PRIMARY KEY,
+	imsi TEXT,
+	mac_addr TEXT,
+	eap_method TEXT,
+	timestamp TEXT
 );

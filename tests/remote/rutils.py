@@ -19,10 +19,10 @@ class TestSkip(Exception):
 # get host based on name
 def get_host(devices, dev_name):
     dev = config.get_device(devices, dev_name)
-    host = Host(host = dev['hostname'],
-                ifname = dev['ifname'],
-                port = dev['port'],
-                name = dev['name'])
+    host = Host(host=dev['hostname'],
+                ifname=dev['ifname'],
+                port=dev['port'],
+                name=dev['name'])
     host.dev = dev
     return host
 
@@ -117,7 +117,8 @@ def run_hostapd(host, setup_params):
 
     if log_file:
         host.add_log(log_file)
-    status, buf = host.execute([setup_params['hostapd'], "-B", "-ddt", "-g", "udp:" + host.port, log])
+    pidfile = setup_params['log_dir'] + "hostapd_" + host.ifname + "_" + setup_params['tc_name'] + ".pid"
+    status, buf = host.execute([setup_params['hostapd'], "-B", "-ddt", "-g", "udp:" + host.port, "-P", pidfile, log])
     if status != 0:
         raise Exception("Could not run hostapd: " + buf)
 
@@ -134,9 +135,18 @@ def run_wpasupplicant(host, setup_params):
 
     if log_file:
         host.add_log(log_file)
-    status, buf = host.execute([setup_params['wpa_supplicant'], "-B", "-ddt", "-g", "udp:" + host.port, log])
+    pidfile = setup_params['log_dir'] + "wpa_supplicant_" + host.ifname + "_" + setup_params['tc_name'] + ".pid"
+    status, buf = host.execute([setup_params['wpa_supplicant'], "-B", "-ddt", "-g", "udp:" + host.port, "-P", pidfile, log])
     if status != 0:
         raise Exception("Could not run wpa_supplicant: " + buf)
+
+def kill_wpasupplicant(host, setup_params):
+    pidfile = setup_params['log_dir'] + "wpa_supplicant_" + host.ifname + "_" + setup_params['tc_name'] + ".pid"
+    host.execute(["kill `cat " + pidfile + "`"])
+
+def kill_hostapd(host, setup_params):
+    pidfile = setup_params['log_dir'] + "hostapd_" + host.ifname + "_" + setup_params['tc_name'] + ".pid"
+    host.execute(["kill `cat " + pidfile + "`"])
 
 def get_ap_params(channel="1", bw="HT20", country="US", security="open", ht_capab=None, vht_capab=None):
     ssid = "test_" + channel + "_" + security + "_" + bw
@@ -191,13 +201,13 @@ def get_ap_params(channel="1", bw="HT20", country="US", security="open", ht_capa
     elif security == "mixed":
         sec_params = hostapd.wpa_mixed_params(passphrase="testtest")
     elif security == "wep":
-        sec_params = { "wep_key0" : "123456789a",
-                       "wep_default_key" : "0",
-                       "auth_algs" : "1"}
+        sec_params = {"wep_key0" : "123456789a",
+                      "wep_default_key" : "0",
+                      "auth_algs" : "1"}
     elif security == "wep_shared":
-        sec_params = { "wep_key0" : "123456789a",
-                       "wep_default_key" : "0",
-                       "auth_algs" : "2" }
+        sec_params = {"wep_key0" : "123456789a",
+                      "wep_default_key" : "0",
+                      "auth_algs" : "2"}
     else:
         sec_params = {}
 
@@ -233,6 +243,8 @@ def get_ipv6(client, ifname=None):
 
     for line in lines:
         res = line.find("Scope:Link")
+        if res == -1:
+            res = line.find("<link>")
         if res != -1:
             break
 
@@ -242,6 +254,8 @@ def get_ipv6(client, ifname=None):
             addr_mask = words[2]
             addr = addr_mask.split("/")
             return addr[0]
+        if words[0] == "inet6":
+            return words[1]
 
     return "unknown"
 
@@ -275,7 +289,7 @@ def get_mac_addr(host, iface=None):
     for word in words:
         if found == 1:
             return word
-        if word == "HWaddr":
+        if word == "HWaddr" or word == "ether":
             found = 1
     raise Exception("Could not find HWaddr")
 
@@ -328,18 +342,18 @@ def ping_run(host, ip, result, ifname=None, addr_type="ipv4", deadline="5", qos=
 
     flush_arp_cache(host)
 
-    thread = host.execute_run(ping, result)
+    thread = host.thread_run(ping, result)
     return thread
 
 def ping_wait(host, thread, timeout=None):
-    host.wait_execute_complete(thread, timeout)
-    if thread.isAlive():
+    host.thread_wait(thread, timeout)
+    if thread.is_alive():
         raise Exception("ping thread still alive")
 
 def flush_arp_cache(host):
     host.execute(["ip", "-s", "-s", "neigh", "flush", "all"])
 
-def check_connectivity(a, b, addr_type = "ipv4", deadline="5", qos=None):
+def check_connectivity(a, b, addr_type="ipv4", deadline="5", qos=None):
     addr_a = get_ip(a, addr_type)
     addr_b = get_ip(b, addr_type)
 
@@ -399,7 +413,7 @@ def get_iperf_speed(iperf_res, pattern="Mbits/sec"):
 
     # first find last SUM line
     for line in lines:
-        res  = line.find("[SUM]")
+        res = line.find("[SUM]")
         if res != -1:
             sum_line = line
 
@@ -461,7 +475,7 @@ def iperf_run(server, client, server_ip, client_res, server_res,
         iperf_server = iperf_server + ["-p", port]
     elif l3 == "ipv6":
         iperf_client = [iperf, "-V", "-c", server_ip  + "%" + ifname, "-p", port]
-        iperf_server = iperf_server + ["-V", "-p",  port]
+        iperf_server = iperf_server + ["-V", "-p", port]
     else:
         return -1, -1
 
@@ -474,7 +488,7 @@ def iperf_run(server, client, server_ip, client_res, server_res,
     if l4 == "udp":
         if iperf != "iperf3":
             iperf_server = iperf_server + ["-u"]
-        iperf_client = iperf_client + ["-u", "-b",  bw]
+        iperf_client = iperf_client + ["-u", "-b", bw]
 
     if qos:
         iperf_client = iperf_client + ["-Q", ac_to_iperf_ac(qos)]
@@ -482,25 +496,25 @@ def iperf_run(server, client, server_ip, client_res, server_res,
     flush_arp_cache(server)
     flush_arp_cache(client)
 
-    server_thread = server.execute_run(iperf_server, server_res)
+    server_thread = server.thread_run(iperf_server, server_res)
     time.sleep(1)
-    client_thread = client.execute_run(iperf_client, client_res)
+    client_thread = client.thread_run(iperf_client, client_res)
 
     return server_thread, client_thread
 
 def iperf_wait(server, client, server_thread, client_thread, timeout=None, iperf="iperf"):
-    client.wait_execute_complete(client_thread, timeout)
-    if client_thread.isAlive():
+    client.thread_wait(client_thread, timeout)
+    if client_thread.is_alive():
         raise Exception("iperf client thread still alive")
 
-    server.wait_execute_complete(server_thread, 5)
-    if server_thread.isAlive():
+    server.thread_wait(server_thread, 5)
+    if server_thread.is_alive():
         server.execute(["killall", "-s", "INT", iperf])
         time.sleep(1)
 
-    server.wait_execute_complete(server_thread, 5)
-    if server_thread.isAlive():
-        raise Execption("iperf server thread still alive")
+    server.thread_wait(server_thread, 5)
+    if server_thread.is_alive():
+        raise Exception("iperf server thread still alive")
 
     return
 

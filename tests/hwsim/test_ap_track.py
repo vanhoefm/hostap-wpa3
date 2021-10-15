@@ -11,33 +11,35 @@ import time
 
 import hostapd
 from wpasupplicant import WpaSupplicant
-from utils import parse_ie
+from utils import parse_ie, disable_hapd, clear_regdom_dev
 
 def test_ap_track_sta(dev, apdev):
     """Dualband AP tracking unconnected stations"""
+
     try:
-        _test_ap_track_sta(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "track_sta_max_num": "2"}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "track_sta_max_num": "100",
+                  "track_sta_max_age": "1"}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta(dev, hapd, apdev[0]['bssid'], hapd2,
+                           apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev, 3)
 
-def _test_ap_track_sta(dev, apdev):
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "track_sta_max_num": "2" }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "track_sta_max_num": "100",
-               "track_sta_max_age": "1" }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
-
+def _test_ap_track_sta(dev, hapd, bssid, hapd2, bssid2):
     for i in range(2):
         dev[0].scan_for_bss(bssid, freq=2437, force_scan=True)
         dev[0].scan_for_bss(bssid2, freq=5200, force_scan=True)
@@ -82,29 +84,30 @@ def _test_ap_track_sta(dev, apdev):
 def test_ap_track_sta_no_probe_resp(dev, apdev):
     """Dualband AP not replying to probes from dualband STA on 2.4 GHz"""
     try:
-        _test_ap_track_sta_no_probe_resp(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "beacon_int": "10000",
+                  "no_probe_resp_if_seen_on": apdev[1]['ifname']}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "track_sta_max_num": "100"}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta_no_probe_resp(dev, apdev[0]['bssid'],
+                                         apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev, 2)
 
-def _test_ap_track_sta_no_probe_resp(dev, apdev):
+def _test_ap_track_sta_no_probe_resp(dev, bssid, bssid2):
     dev[0].flush_scan_cache()
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "beacon_int": "10000",
-               "no_probe_resp_if_seen_on": apdev[1]['ifname'] }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "track_sta_max_num": "100" }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
 
     dev[0].scan_for_bss(bssid2, freq=5200, force_scan=True)
     dev[1].scan_for_bss(bssid, freq=2437, force_scan=True)
@@ -124,28 +127,28 @@ def _test_ap_track_sta_no_probe_resp(dev, apdev):
 def test_ap_track_sta_no_auth(dev, apdev):
     """Dualband AP rejecting authentication from dualband STA on 2.4 GHz"""
     try:
-        _test_ap_track_sta_no_auth(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "track_sta_max_num": "100",
+                  "no_auth_if_seen_on": apdev[1]['ifname']}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "track_sta_max_num": "100"}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta_no_auth(dev, apdev[0]['bssid'], apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev, 2)
 
-def _test_ap_track_sta_no_auth(dev, apdev):
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "track_sta_max_num": "100",
-               "no_auth_if_seen_on": apdev[1]['ifname'] }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "track_sta_max_num": "100" }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
-
+def _test_ap_track_sta_no_auth(dev, bssid, bssid2):
     dev[0].scan_for_bss(bssid, freq=2437, force_scan=True)
     dev[0].scan_for_bss(bssid2, freq=5200, force_scan=True)
     dev[1].scan_for_bss(bssid, freq=2437, force_scan=True)
@@ -155,8 +158,8 @@ def _test_ap_track_sta_no_auth(dev, apdev):
     dev[0].connect("track", key_mgmt="NONE", scan_freq="2437",
                    freq_list="2437", wait_connect=False)
     dev[1].request("DISCONNECT")
-    ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED",
-                             "CTRL-EVENT-AUTH-REJECT" ], timeout=10)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED",
+                            "CTRL-EVENT-AUTH-REJECT"], timeout=10)
     if ev is None:
         raise Exception("Unknown connection result")
     if "CTRL-EVENT-CONNECTED" in ev:
@@ -170,30 +173,31 @@ def _test_ap_track_sta_no_auth(dev, apdev):
 def test_ap_track_sta_no_auth_passive(dev, apdev):
     """AP rejecting authentication from dualband STA on 2.4 GHz (passive)"""
     try:
-        _test_ap_track_sta_no_auth_passive(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "no_auth_if_seen_on": apdev[1]['ifname']}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "interworking": "1",
+                  "venue_name": "eng:Venue",
+                  "track_sta_max_num": "100"}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta_no_auth_passive(dev, apdev[0]['bssid'],
+                                           apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev)
 
-def _test_ap_track_sta_no_auth_passive(dev, apdev):
+def _test_ap_track_sta_no_auth_passive(dev, bssid, bssid2):
     dev[0].flush_scan_cache()
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "no_auth_if_seen_on": apdev[1]['ifname'] }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "interworking": "1",
-               "venue_name": "eng:Venue",
-               "track_sta_max_num": "100" }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
 
     dev[0].scan_for_bss(bssid, freq=2437, force_scan=True)
     for i in range(10):
@@ -214,8 +218,8 @@ def _test_ap_track_sta_no_auth_passive(dev, apdev):
 
     dev[0].connect("track", key_mgmt="NONE", scan_freq="2437",
                    freq_list="2437", wait_connect=False)
-    ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED",
-                             "CTRL-EVENT-AUTH-REJECT" ], timeout=10)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED",
+                            "CTRL-EVENT-AUTH-REJECT"], timeout=10)
     if ev is None:
         raise Exception("Unknown connection result")
     if "CTRL-EVENT-CONNECTED" in ev:
@@ -227,28 +231,28 @@ def _test_ap_track_sta_no_auth_passive(dev, apdev):
 def test_ap_track_sta_force_5ghz(dev, apdev):
     """Dualband AP forcing dualband STA to connect on 5 GHz"""
     try:
-        _test_ap_track_sta_force_5ghz(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "no_probe_resp_if_seen_on": apdev[1]['ifname'],
+                  "no_auth_if_seen_on": apdev[1]['ifname']}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "track_sta_max_num": "100"}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta_force_5ghz(dev, apdev[0]['bssid'], apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev)
 
-def _test_ap_track_sta_force_5ghz(dev, apdev):
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "no_probe_resp_if_seen_on": apdev[1]['ifname'],
-               "no_auth_if_seen_on": apdev[1]['ifname'] }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "track_sta_max_num": "100" }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
-
+def _test_ap_track_sta_force_5ghz(dev, bssid, bssid2):
     dev[0].scan_for_bss(bssid, freq=2437, force_scan=True)
     dev[0].scan_for_bss(bssid2, freq=5200, force_scan=True)
 
@@ -261,28 +265,28 @@ def _test_ap_track_sta_force_5ghz(dev, apdev):
 def test_ap_track_sta_force_2ghz(dev, apdev):
     """Dualband AP forcing dualband STA to connect on 2.4 GHz"""
     try:
-        _test_ap_track_sta_force_2ghz(dev, apdev)
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "g",
+                  "channel": "6",
+                  "track_sta_max_num": "100"}
+        hapd = hostapd.add_ap(apdev[0], params)
+
+        params = {"ssid": "track",
+                  "country_code": "US",
+                  "hw_mode": "a",
+                  "channel": "40",
+                  "no_probe_resp_if_seen_on": apdev[0]['ifname'],
+                  "no_auth_if_seen_on": apdev[0]['ifname']}
+        hapd2 = hostapd.add_ap(apdev[1], params)
+
+        _test_ap_track_sta_force_2ghz(dev, apdev[0]['bssid'], apdev[1]['bssid'])
     finally:
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        disable_hapd(hapd)
+        disable_hapd(hapd2)
+        clear_regdom_dev(dev)
 
-def _test_ap_track_sta_force_2ghz(dev, apdev):
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "track_sta_max_num": "100" }
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = apdev[0]['bssid']
-
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "a",
-               "channel": "40",
-               "no_probe_resp_if_seen_on": apdev[0]['ifname'],
-               "no_auth_if_seen_on": apdev[0]['ifname'] }
-    hapd2 = hostapd.add_ap(apdev[1], params)
-    bssid2 = apdev[1]['bssid']
-
+def _test_ap_track_sta_force_2ghz(dev, bssid, bssid2):
     dev[0].scan_for_bss(bssid2, freq=5200, force_scan=True)
     dev[0].scan_for_bss(bssid, freq=2437, force_scan=True)
 
@@ -304,11 +308,11 @@ def test_ap_track_taxonomy(dev, apdev):
         dev[2].flush_scan_cache()
 
 def _test_ap_track_taxonomy(dev, apdev):
-    params = { "ssid": "track",
-               "country_code": "US",
-               "hw_mode": "g",
-               "channel": "6",
-               "track_sta_max_num": "2" }
+    params = {"ssid": "track",
+              "country_code": "US",
+              "hw_mode": "g",
+              "channel": "6",
+              "track_sta_max_num": "2"}
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
@@ -349,11 +353,11 @@ def _test_ap_track_taxonomy(dev, apdev):
     if "|assoc:" not in res:
         raise Exception("Missing assoc info in SIGNATURE")
     if "wps:" in res:
-        raise Exception("Unexpected WPS info");
+        raise Exception("Unexpected WPS info")
     if ",221(0050f2,4)," in res:
-        raise Exception("Unexpected WPS IE info");
+        raise Exception("Unexpected WPS IE info")
     if ",221(506f9a,9)," in res:
-        raise Exception("Unexpected P2P IE info");
+        raise Exception("Unexpected P2P IE info")
 
     res = hapd.request("SIGNATURE " + addr)
     logger.info("sta: " + res)
@@ -364,9 +368,9 @@ def _test_ap_track_taxonomy(dev, apdev):
     if "wps:track_test" not in res:
         raise Exception("Missing WPS model name")
     if ",221(0050f2,4)," not in res:
-        raise Exception("Missing WPS IE info");
+        raise Exception("Missing WPS IE info")
     if ",221(506f9a,9)," not in res:
-        raise Exception("Missing P2P IE info");
+        raise Exception("Missing P2P IE info")
 
     addr2 = dev[2].own_addr()
     res = hapd.request("SIGNATURE " + addr2)
@@ -399,3 +403,35 @@ def _test_ap_track_taxonomy(dev, apdev):
         raise Exception("Unexpected SIGNATURE prefix")
     if "|assoc:" not in res:
         raise Exception("Missing assoc info in SIGNATURE")
+
+def test_ap_track_taxonomy_5g(dev, apdev):
+    """AP tracking STA taxonomy (5 GHz)"""
+    try:
+        _test_ap_track_taxonomy_5g(dev, apdev)
+    finally:
+        subprocess.call(['iw', 'reg', 'set', '00'])
+        dev[0].flush_scan_cache()
+
+def _test_ap_track_taxonomy_5g(dev, apdev):
+    params = {"ssid": "track",
+              "country_code": "US",
+              "hw_mode": "a",
+              "channel": "40",
+              "track_sta_max_num": "2"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = apdev[0]['bssid']
+
+    dev[0].scan_for_bss(bssid, freq=5200, force_scan=True)
+    addr0 = dev[0].own_addr()
+    dev[0].connect("track", key_mgmt="NONE", scan_freq="5200")
+
+    res = hapd.request("SIGNATURE " + addr0)
+    logger.info("sta0: " + res)
+    if not res.startswith("wifi4|probe:"):
+        raise Exception("Unexpected SIGNATURE prefix")
+    if "|assoc:" not in res:
+        raise Exception("Missing assoc info in SIGNATURE")
+    if ",htcap:" not in res:
+        raise Exception("Missing HT info in SIGNATURE")
+    if ",vhtcap:" not in res:
+        raise Exception("Missing VHT info in SIGNATURE")

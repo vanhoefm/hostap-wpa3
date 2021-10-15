@@ -34,12 +34,12 @@ def _test_kernel_bss_leak(dev, apdev, deauth):
                     'sa': pkt['da'],
                     'da': pkt['sa'],
                     'bssid': pkt['bssid'],
-                    'payload': '\x01\x00',
+                    'payload': b'\x01\x00',
                 })
             break
         else:
             hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=%s" % (
-                         binascii.hexlify(pkt['frame']), ))
+                         binascii.hexlify(pkt['frame']).decode(), ))
     hapd.set("ext_mgmt_frame_handling", "0")
 
     hapd.request("STOP_AP")
@@ -71,7 +71,7 @@ def expect_no_ack(hapd):
 
 def test_kernel_unknown_action_frame_rejection_sta(dev, apdev, params):
     """mac80211 and unknown Action frame rejection in STA mode"""
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "unknown-action" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "unknown-action"})
     dev[0].connect("unknown-action", key_mgmt="NONE", scan_freq="2412")
     bssid = hapd.own_addr()
     addr = dev[0].own_addr()
@@ -120,7 +120,7 @@ def test_kernel_unknown_action_frame_rejection_sta(dev, apdev, params):
                      "wlan.sa == %s && wlan.fc.type_subtype == 0x0d" % addr,
                      display=["wlan_mgt.fixed.category_code"])
     res = out.splitlines()
-    categ = [ int(x) for x in res ]
+    categ = [int(x) for x in res]
 
     if 0xf2 in categ or 0xf3 in categ:
         raise Exception("Unexpected Action frame rejection: " + str(categ))

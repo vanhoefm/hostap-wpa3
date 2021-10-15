@@ -1,4 +1,4 @@
-# wmediumd sanity checks
+# wmediumd validity checks
 # Copyright (c) 2015, Intel Deutschland GmbH
 #
 # This software may be distributed under the terms of the BSD license.
@@ -9,6 +9,7 @@ from utils import HwsimSkip
 from wpasupplicant import WpaSupplicant
 from tshark import run_tshark
 from test_ap_open import _test_ap_open
+from test_scan import test_scan_only_one as _test_scan_only_one
 from test_wpas_mesh import check_mesh_support, check_mesh_group_added
 from test_wpas_mesh import check_mesh_peer_connected, add_open_mesh_network
 from test_wpas_mesh import check_mesh_group_removed
@@ -19,58 +20,58 @@ class LocalVariables:
 CFG = """
 ifaces :
 {
-    ids = ["%s", "%s" ];
+    ids = ["%s", "%s"]
     links = (
         (0, 1, 30)
-    );
-};
+    )
+}
 """
 
 CFG2 = """
 ifaces :
 {
-    ids = ["%s", "%s", "%s"];
-};
+    ids = ["%s", "%s", "%s"]
+}
 
 model:
 {
-    type = "prob";
+    type = "prob"
 
     links = (
         (0, 1, 0.000000),
         (0, 2, 0.000000),
         (1, 2, 1.000000)
-    );
-};
+    )
+}
 """
 
 CFG3 = """
 ifaces :
 {
-    ids = ["%s", "%s", "%s", "%s", "%s" ];
-};
+    ids = ["%s", "%s", "%s", "%s", "%s"]
+}
 
 model:
 {
-    type = "prob";
+    type = "prob"
 
-    default_prob = 1.0;
+    default_prob = 1.0
     links = (
         (0, 1, 0.000000),
         (1, 2, 0.000000),
         (2, 3, 0.000000),
         (3, 4, 0.000000)
-    );
-};
+    )
+}
 """
 
 def get_wmediumd_version():
     if len(LocalVariables.revs) > 0:
-        return LocalVariables.revs;
+        return LocalVariables.revs
 
     try:
-        verstr = subprocess.check_output(['wmediumd', '-V'])
-    except OSError, e:
+        verstr = subprocess.check_output(['wmediumd', '-V']).decode()
+    except OSError as e:
         if e.errno == errno.ENOENT:
             raise HwsimSkip('wmediumd not available')
         raise
@@ -82,7 +83,7 @@ def get_wmediumd_version():
     while len(LocalVariables.revs) < 3:
         LocalVariables.revs += [0]
 
-    return LocalVariables.revs;
+    return LocalVariables.revs
 
 def require_wmediumd_version(major, minor, patch):
     revs = get_wmediumd_version()
@@ -101,14 +102,14 @@ def start_wmediumd(fn, params):
         p = subprocess.Popen(['wmediumd', '-c', fn],
                              stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
-    except OSError, e:
+    except OSError as e:
         if e.errno == errno.ENOENT:
             raise HwsimSkip('wmediumd not available')
         raise
 
     logs = ''
     while True:
-        line = p.stdout.readline()
+        line = p.stdout.readline().decode()
         if not line:
             output_wmediumd_log(p, params, logs)
             raise Exception('wmediumd was terminated unexpectedly')
@@ -121,7 +122,7 @@ def stop_wmediumd(p, params):
     p.terminate()
     p.wait()
     stdoutdata, stderrdata = p.communicate()
-    output_wmediumd_log(p, params, stdoutdata)
+    output_wmediumd_log(p, params, stdoutdata.decode())
 
 def test_wmediumd_simple(dev, apdev, params):
     """test a simple wmediumd configuration"""
@@ -284,8 +285,8 @@ def _test_wmediumd_path_ttl(dev, ok):
             raise Exception("Unexpected mode: " + mode)
 
     # set mesh path request ttl
-    subprocess.check_call([ "iw", "dev", dev[0].ifname, "set", "mesh_param",
-                            "mesh_element_ttl=" + ("4" if ok else "3") ])
+    subprocess.check_call(["iw", "dev", dev[0].ifname, "set", "mesh_param",
+                           "mesh_element_ttl=" + ("4" if ok else "3")])
 
     # Check for peer connected
     for i in range(0, 5):
@@ -350,7 +351,7 @@ def test_wmediumd_path_rann(dev, apdev, params):
     filt = "wlan.fc.type_subtype == 0x000d && " + \
            "wlan_mgt.fixed.mesh_action == 0x01 && " + \
            "wlan_mgt.tag.number == 126"
-    out = run_tshark(capfile, filt, [ "wlan.rann.root_sta" ])
+    out = run_tshark(capfile, filt, ["wlan.rann.root_sta"])
     if out is None:
         raise Exception("No captured data found\n")
     if out.find(dev[2].own_addr()) == -1 or \
@@ -363,12 +364,12 @@ def test_wmediumd_path_rann(dev, apdev, params):
            "wlan.fc.type_subtype == 0x000d && " + \
            "wlan_mgt.fixed.mesh_action == 0x01 && " + \
            "wlan_mgt.tag.number == 126"
-    out = run_tshark(capfile, filt, [ "frame.time_relative" ])
+    out = run_tshark(capfile, filt, ["frame.time_relative"])
     if out is None:
         raise Exception("No captured data found\n")
     lines = out.splitlines()
     prev = float(lines[len(lines) - 1])
-    for i in reversed(range(1, len(lines) - 1)):
+    for i in reversed(list(range(1, len(lines) - 1))):
         now = float(lines[i])
         if prev - now < 1.0 or 3.0 < prev - now:
             raise Exception("RANN interval " + str(prev - now) +
@@ -380,7 +381,7 @@ def test_wmediumd_path_rann(dev, apdev, params):
            "wlan.fc.type_subtype == 0x000d && " + \
            "wlan_mgt.fixed.mesh_action == 0x01 && " + \
            "wlan_mgt.tag.number == 130"
-    out = run_tshark(capfile, filt, [ "wlan.sa", "wlan.da" ])
+    out = run_tshark(capfile, filt, ["wlan.sa", "wlan.da"])
     if out is None:
         raise Exception("No captured data found\n")
     if len(out) > 0:
@@ -462,3 +463,18 @@ def _test_wmediumd_path_rann(dev, apdev):
         dev[i].mesh_group_remove()
         check_mesh_group_removed(dev[i])
         dev[i].dump_monitor()
+
+def test_wmediumd_scan_only_one(dev, apdev, params):
+    """Test that scanning with a single active AP only returns that one (wmediund)"""
+    fd, fn = tempfile.mkstemp()
+    try:
+        f = os.fdopen(fd, 'w')
+        f.write(CFG % (apdev[0]['bssid'], dev[0].own_addr()))
+        f.close()
+        p = start_wmediumd(fn, params)
+        try:
+            _test_scan_only_one(dev, apdev)
+        finally:
+            stop_wmediumd(p, params)
+    finally:
+        os.unlink(fn)

@@ -31,6 +31,7 @@ struct eap_aka_data {
 	u8 emsk[EAP_EMSK_LEN];
 	u8 rand[EAP_AKA_RAND_LEN], autn[EAP_AKA_AUTN_LEN];
 	u8 auts[EAP_AKA_AUTS_LEN];
+	u8 reauth_mac[EAP_SIM_MAC_LEN];
 
 	int num_id_req, num_notification;
 	u8 *pseudonym;
@@ -441,19 +442,28 @@ static int eap_aka_learn_ids(struct eap_sm *sm, struct eap_aka_data *data,
 
 
 static int eap_aka_add_id_msg(struct eap_aka_data *data,
-			      const struct wpabuf *msg)
+			      const struct wpabuf *msg1,
+			      const struct wpabuf *msg2)
 {
-	if (msg == NULL)
-		return -1;
+	size_t len;
 
-	if (data->id_msgs == NULL) {
-		data->id_msgs = wpabuf_dup(msg);
-		return data->id_msgs == NULL ? -1 : 0;
+	if (!msg1)
+		return -1;
+	len = wpabuf_len(msg1);
+	if (msg2)
+		len += wpabuf_len(msg2);
+
+	if (!data->id_msgs) {
+		data->id_msgs = wpabuf_alloc(len);
+		if (!data->id_msgs)
+			return -1;
+	} else if (wpabuf_resize(&data->id_msgs, len) < 0) {
+		return -1;
 	}
 
-	if (wpabuf_resize(&data->id_msgs, wpabuf_len(msg)) < 0)
-		return -1;
-	wpabuf_put_buf(data->id_msgs, msg);
+	wpabuf_put_buf(data->id_msgs, msg1);
+	if (msg2)
+		wpabuf_put_buf(data->id_msgs, msg2);
 
 	return 0;
 }
@@ -622,15 +632,22 @@ static struct wpabuf * eap_aka_response_identity(struct eap_sm *sm,
 		identity_len = data->reauth_id_len;
 		data->reauth = 1;
 	} else if ((id_req == ANY_ID || id_req == FULLAUTH_ID) &&
-		   data->pseudonym) {
+		   data->pseudonym &&
+		   !eap_sim_anonymous_username(data->pseudonym,
+					       data->pseudonym_len)) {
 		identity = data->pseudonym;
 		identity_len = data->pseudonym_len;
 		eap_aka_clear_identities(sm, data, CLEAR_REAUTH_ID);
 	} else if (id_req != NO_ID_REQ) {
 		identity = eap_get_config_identity(sm, &identity_len);
 		if (identity) {
-			eap_aka_clear_identities(sm, data, CLEAR_PSEUDONYM |
-						 CLEAR_REAUTH_ID);
+			int ids = CLEAR_PSEUDONYM | CLEAR_REAUTH_ID;
+
+			if (data->pseudonym &&
+			    eap_sim_anonymous_username(data->pseudonym,
+						       data->pseudonym_len))
+				ids &= ~CLEAR_PSEUDONYM;
+			eap_aka_clear_identities(sm, data, ids);
 		}
 	}
 	if (id_req != NO_ID_REQ)
@@ -791,8 +808,13 @@ static struct wpabuf * eap_aka_process_identity(struct eap_sm *sm,
 	buf = eap_aka_response_identity(sm, data, id, attr->id_req);
 
 	if (data->prev_id != id) {
-		eap_aka_add_id_msg(data, reqData);
-		eap_aka_add_id_msg(data, buf);
+		if (eap_aka_add_id_msg(data, reqData, buf) < 0) {
+			wpa_printf(MSG_INFO,
+				   "EAP-AKA: Failed to store ID messages");
+			wpabuf_free(buf);
+			return eap_aka_client_error(
+				data, id, EAP_AKA_UNABLE_TO_PROCESS_PACKET);
+		}
 		data->prev_id = id;
 	}
 
@@ -924,8 +946,13 @@ static struct wpabuf * eap_aka_process_challenge(struct eap_sm *sm,
 				     attr->checkcode_len)) {
 		wpa_printf(MSG_WARNING, "EAP-AKA: Invalid AT_CHECKCODE in the "
 			   "message");
+#ifdef TEST_FUZZ
+		wpa_printf(MSG_INFO,
+			   "TEST: Ignore AT_CHECKCODE mismatch for fuzz testing");
+#else /* TEST_FUZZ */
 		return eap_aka_client_error(data, id,
 					    EAP_AKA_UNABLE_TO_PROCESS_PACKET);
+#endif /* TEST_FUZZ */
 	}
 
 #ifdef EAP_AKA_PRIME
@@ -1026,7 +1053,9 @@ static struct wpabuf * eap_aka_process_challenge(struct eap_sm *sm,
 	if (data->last_eap_identity) {
 		identity = data->last_eap_identity;
 		identity_len = data->last_eap_identity_len;
-	} else if (data->pseudonym) {
+	} else if (data->pseudonym &&
+		   !eap_sim_anonymous_username(data->pseudonym,
+					       data->pseudonym_len)) {
 		identity = data->pseudonym;
 		identity_len = data->pseudonym_len;
 	} else {
@@ -1055,8 +1084,13 @@ static struct wpabuf * eap_aka_process_challenge(struct eap_sm *sm,
 	if (eap_aka_verify_mac(data, reqData, attr->mac, (u8 *) "", 0)) {
 		wpa_printf(MSG_WARNING, "EAP-AKA: Challenge message "
 			   "used invalid AT_MAC");
+#ifdef TEST_FUZZ
+		wpa_printf(MSG_INFO,
+			   "TEST: Ignore AT_MAC mismatch for fuzz testing");
+#else /* TEST_FUZZ */
 		return eap_aka_client_error(data, id,
 					    EAP_AKA_UNABLE_TO_PROCESS_PACKET);
+#endif /* TEST_FUZZ */
 	}
 
 	/* Old reauthentication identity must not be used anymore. In
@@ -1205,8 +1239,13 @@ static struct wpabuf * eap_aka_process_reauthentication(
 	if (attr->checkcode &&
 	    eap_aka_verify_checkcode(data, attr->checkcode,
 				     attr->checkcode_len)) {
+#ifdef TEST_FUZZ
+		wpa_printf(MSG_INFO,
+			   "TEST: Ignore AT_CHECKCODE mismatch for fuzz testing");
+#else /* TEST_FUZZ */
 		wpa_printf(MSG_WARNING, "EAP-AKA: Invalid AT_CHECKCODE in the "
 			   "message");
+#endif /* TEST_FUZZ */
 		return eap_aka_client_error(data, id,
 					    EAP_AKA_UNABLE_TO_PROCESS_PACKET);
 	}
@@ -1225,6 +1264,14 @@ static struct wpabuf * eap_aka_process_reauthentication(
 		return eap_aka_client_error(data, id,
 					    EAP_AKA_UNABLE_TO_PROCESS_PACKET);
 	}
+
+	/* At this stage the received MAC has been verified. Use this MAC for
+	 * reauth Session-Id calculation if all other checks pass.
+	 * The peer does not use the local MAC but the received MAC in deriving
+	 * Session-Id. */
+	os_memcpy(data->reauth_mac, attr->mac, EAP_SIM_MAC_LEN);
+	wpa_hexdump(MSG_DEBUG, "EAP-AKA: Server MAC",
+		    data->reauth_mac, EAP_SIM_MAC_LEN);
 
 	if (attr->encr_data == NULL || attr->iv == NULL) {
 		wpa_printf(MSG_WARNING, "EAP-AKA: Reauthentication "
@@ -1332,24 +1379,24 @@ static struct wpabuf * eap_aka_process(struct eap_sm *sm, void *priv,
 	if (eap_get_config_identity(sm, &len) == NULL) {
 		wpa_printf(MSG_INFO, "EAP-AKA: Identity not configured");
 		eap_sm_request_identity(sm);
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
 	pos = eap_hdr_validate(EAP_VENDOR_IETF, data->eap_method, reqData,
 			       &len);
 	if (pos == NULL || len < 3) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 	req = wpabuf_head(reqData);
 	id = req->identifier;
 	len = be_to_host16(req->length);
 
-	ret->ignore = FALSE;
+	ret->ignore = false;
 	ret->methodState = METHOD_MAY_CONT;
 	ret->decision = DECISION_FAIL;
-	ret->allowNotifications = TRUE;
+	ret->allowNotifications = true;
 
 	subtype = *pos++;
 	wpa_printf(MSG_DEBUG, "EAP-AKA: Subtype=%d", subtype);
@@ -1408,14 +1455,14 @@ done:
 		ret->methodState = METHOD_CONT;
 
 	if (ret->methodState == METHOD_DONE) {
-		ret->allowNotifications = FALSE;
+		ret->allowNotifications = false;
 	}
 
 	return res;
 }
 
 
-static Boolean eap_aka_has_reauth_data(struct eap_sm *sm, void *priv)
+static bool eap_aka_has_reauth_data(struct eap_sm *sm, void *priv)
 {
 	struct eap_aka_data *data = priv;
 	return data->pseudonym || data->reauth_id;
@@ -1464,7 +1511,7 @@ static const u8 * eap_aka_get_identity(struct eap_sm *sm, void *priv,
 }
 
 
-static Boolean eap_aka_isKeyAvailable(struct eap_sm *sm, void *priv)
+static bool eap_aka_isKeyAvailable(struct eap_sm *sm, void *priv)
 {
 	struct eap_aka_data *data = priv;
 	return data->state == SUCCESS;
@@ -1497,14 +1544,24 @@ static u8 * eap_aka_get_session_id(struct eap_sm *sm, void *priv, size_t *len)
 	if (data->state != SUCCESS)
 		return NULL;
 
-	*len = 1 + EAP_AKA_RAND_LEN + EAP_AKA_AUTN_LEN;
+	if (!data->reauth)
+		*len = 1 + EAP_AKA_RAND_LEN + EAP_AKA_AUTN_LEN;
+	else
+		*len = 1 + EAP_SIM_NONCE_S_LEN + EAP_SIM_MAC_LEN;
 	id = os_malloc(*len);
 	if (id == NULL)
 		return NULL;
 
 	id[0] = data->eap_method;
-	os_memcpy(id + 1, data->rand, EAP_AKA_RAND_LEN);
-	os_memcpy(id + 1 + EAP_AKA_RAND_LEN, data->autn, EAP_AKA_AUTN_LEN);
+	if (!data->reauth) {
+		os_memcpy(id + 1, data->rand, EAP_AKA_RAND_LEN);
+		os_memcpy(id + 1 + EAP_AKA_RAND_LEN, data->autn,
+			  EAP_AKA_AUTN_LEN);
+	} else {
+		os_memcpy(id + 1, data->nonce_s, EAP_SIM_NONCE_S_LEN);
+		os_memcpy(id + 1 + EAP_SIM_NONCE_S_LEN, data->reauth_mac,
+			  EAP_SIM_MAC_LEN);
+	}
 	wpa_hexdump(MSG_DEBUG, "EAP-AKA: Derived Session-Id", id, *len);
 
 	return id;

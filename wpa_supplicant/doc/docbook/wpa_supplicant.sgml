@@ -1,6 +1,10 @@
 <!doctype refentry PUBLIC "-//OASIS//DTD DocBook V4.1//EN">
 
 <refentry>
+  <refentryinfo>
+    <date>07 August 2019</date>
+  </refentryinfo>
+
   <refmeta>
     <refentrytitle>wpa_supplicant</refentrytitle>
     <manvolnum>8</manvolnum>
@@ -42,7 +46,7 @@
     can be used to improve the network security, but even that has inherited
     security issues due to the use of WEP for encryption. Wi-Fi Protected
     Access and IEEE 802.11i amendment to the wireless LAN standard introduce
-    a much improvement mechanism for securing wireless networks. IEEE 802.11i
+    a much improved mechanism for securing wireless networks. IEEE 802.11i
     enabled networks that are using CCMP (encryption mechanism based on strong
     cryptographic algorithm AES) can finally be called secure used for
     applications which require efficient protection against unauthorized
@@ -246,9 +250,18 @@
 
     <variablelist>
       <varlistentry>
+	<term>nl80211</term>
+	<listitem>
+	  <para>Uses the modern Linux nl80211/cfg80211 netlink-based
+	  interface (most new drivers).</para>
+	</listitem>
+      </varlistentry>
+
+      <varlistentry>
 	<term>wext</term>
 	<listitem>
-	  <para>Linux wireless extensions (generic).</para>
+	  <para>Uses the legacy Linux wireless extensions ioctl-based
+	  interface (older hardware/drivers).</para>
 	</listitem>
       </varlistentry>
 
@@ -462,7 +475,7 @@
 	  <para>Enable DBus control interface. If enabled, interface
 	  definitions may be omitted. (This is only available
 	  if <command>wpa_supplicant</command> was built with
-	  the <literal>CONFIG_DBUS</literal> option.)</para>
+	  the <literal>CONFIG_CTRL_IFACE_DBUS_NEW</literal> option.)</para>
 	</listitem>
       </varlistentry>
 
@@ -538,10 +551,14 @@ wpa_supplicant \
 
     <itemizedlist>
       <listitem>
-	<para>Linux kernel 2.4.x or 2.6.x with Linux Wireless
-	Extensions v15 or newer</para>
+	<para>Linux kernel 2.6.30 or higher with
+	nl80211/cfg80211 support</para>
       </listitem>
 
+      <listitem>
+	<para>Linux kernel 2.4.x or higher with Linux Wireless
+	Extensions v15 or newer</para>
+      </listitem>
 
       <listitem>
 	<para>FreeBSD 6-CURRENT</para>
@@ -557,6 +574,13 @@ wpa_supplicant \
   <refsect1>
     <title>Supported Drivers</title>
     <variablelist>
+      <varlistentry>
+	<term>Linux nl80211/cfg80211</term>
+	<listitem>
+	  <para>This is the preferred driver for Linux.</para>
+	</listitem>
+      </varlistentry>
+
       <varlistentry>
 	<term>Linux wireless extensions</term>
 	<listitem>
@@ -729,7 +753,7 @@ fi
   </refsect1>
   <refsect1>
     <title>Legal</title>
-    <para>wpa_supplicant is copyright (c) 2003-2017,
+    <para>wpa_supplicant is copyright (c) 2003-2019,
     Jouni Malinen <email>j@w1.fi</email> and
     contributors.
     All Rights Reserved.</para>

@@ -30,7 +30,7 @@ void wpas_wps_deinit(struct wpa_supplicant *wpa_s);
 int wpas_wps_eapol_cb(struct wpa_supplicant *wpa_s);
 enum wps_request_type wpas_wps_get_req_type(struct wpa_ssid *ssid);
 int wpas_wps_start_pbc(struct wpa_supplicant *wpa_s, const u8 *bssid,
-		       int p2p_group);
+		       int p2p_group, int multi_ap_backhaul_sta);
 int wpas_wps_start_pin(struct wpa_supplicant *wpa_s, const u8 *bssid,
 		       const char *pin, int p2p_group, u16 dev_pw_id);
 void wpas_wps_pbc_overlap(struct wpa_supplicant *wpa_s);
@@ -62,6 +62,7 @@ struct wpabuf * wpas_wps_er_nfc_config_token(struct wpa_supplicant *wpa_s,
 					     int ndef, const char *uuid);
 int wpas_wps_terminate_pending(struct wpa_supplicant *wpa_s);
 void wpas_wps_update_config(struct wpa_supplicant *wpa_s);
+void wpas_wps_update_mac_addr(struct wpa_supplicant *wpa_s);
 struct wpabuf * wpas_wps_nfc_config_token(struct wpa_supplicant *wpa_s,
 					  int ndef, const char *id_str);
 struct wpabuf * wpas_wps_nfc_token(struct wpa_supplicant *wpa_s, int ndef);
@@ -152,6 +153,10 @@ static inline int
 wpas_wps_reenable_networks_pending(struct wpa_supplicant *wpa_s)
 {
 	return 0;
+}
+
+static inline void wpas_wps_update_mac_addr(struct wpa_supplicant *wpa_s)
+{
 }
 
 #endif /* CONFIG_WPS */

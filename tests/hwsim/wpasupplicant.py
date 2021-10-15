@@ -1,5 +1,5 @@
 # Python class for controlling wpa_supplicant
-# Copyright (c) 2013-2014, Jouni Malinen <j@w1.fi>
+# Copyright (c) 2013-2019, Jouni Malinen <j@w1.fi>
 #
 # This software may be distributed under the terms of the BSD license.
 # See README for more details.
@@ -23,7 +23,12 @@ class WpaSupplicant:
         self.monitor = monitor
         self.hostname = hostname
         self.group_ifname = None
+        self.global_mon = None
+        self.global_ctrl = None
         self.gctrl_mon = None
+        self.ctrl = None
+        self.mon = None
+        self.ifname = None
         self.host = remotehost.Host(hostname, ifname)
         self._group_dbg = None
         if ifname:
@@ -33,12 +38,9 @@ class WpaSupplicant:
                 self.p2p_dev_ifname = 'p2p-dev-' + self.ifname
             else:
                 self.p2p_dev_ifname = ifname
-        else:
-            self.ifname = None
 
         self.global_iface = global_iface
         if global_iface:
-            self.global_mon = None
             if hostname != None:
                 self.global_ctrl = wpaspy.Ctrl(hostname, global_port)
                 if self.monitor:
@@ -51,8 +53,87 @@ class WpaSupplicant:
                 self.global_dbg = ""
             if self.monitor:
                 self.global_mon.attach()
-        else:
-            self.global_mon = None
+
+    def __del__(self):
+        self.close_monitor()
+        self.close_control()
+
+    def close_control_ctrl(self):
+        if self.ctrl:
+            del self.ctrl
+            self.ctrl = None
+
+    def close_control_global(self):
+        if self.global_ctrl:
+            del self.global_ctrl
+            self.global_ctrl = None
+
+    def close_control(self):
+        self.close_control_ctrl()
+        self.close_control_global()
+
+    def close_monitor_mon(self):
+        if not self.mon:
+            return
+        try:
+            while self.mon.pending():
+                ev = self.mon.recv()
+                logger.debug(self.dbg + ": " + ev)
+        except:
+            pass
+        try:
+            self.mon.detach()
+        except ConnectionRefusedError:
+            pass
+        except Exception as e:
+            if str(e) == "DETACH failed":
+                pass
+            else:
+                raise
+        del self.mon
+        self.mon = None
+
+    def close_monitor_global(self):
+        if not self.global_mon:
+            return
+        try:
+            while self.global_mon.pending():
+                ev = self.global_mon.recv()
+                logger.debug(self.global_dbg + ": " + ev)
+        except:
+            pass
+        try:
+            self.global_mon.detach()
+        except ConnectionRefusedError:
+            pass
+        except Exception as e:
+            if str(e) == "DETACH failed":
+                pass
+            else:
+                raise
+        del self.global_mon
+        self.global_mon = None
+
+    def close_monitor_group(self):
+        if not self.gctrl_mon:
+            return
+        try:
+            while self.gctrl_mon.pending():
+                ev = self.gctrl_mon.recv()
+                logger.debug(self.dbg + ": " + ev)
+        except:
+            pass
+        try:
+            self.gctrl_mon.detach()
+        except:
+            pass
+        del self.gctrl_mon
+        self.gctrl_mon = None
+
+    def close_monitor(self):
+        self.close_monitor_mon()
+        self.close_monitor_global()
+        self.close_monitor_group()
 
     def cmd_execute(self, cmd_array, shell=False):
         if self.hostname is None:
@@ -64,25 +145,23 @@ class WpaSupplicant:
                                     stdout=subprocess.PIPE, shell=shell)
             out = proc.communicate()[0]
             ret = proc.returncode
-            return ret, out
+            return ret, out.decode()
         else:
             return self.host.execute(cmd_array)
 
     def terminate(self):
         if self.global_mon:
-            self.global_mon.detach()
-            self.global_mon = None
+            self.close_monitor_global()
             self.global_ctrl.terminate()
             self.global_ctrl = None
 
     def close_ctrl(self):
-        if self.global_mon:
-            self.global_mon.detach()
-            self.global_mon = None
-            self.global_ctrl = None
+        self.close_monitor_global()
+        self.close_control_global()
         self.remove_ifname()
 
     def set_ifname(self, ifname, hostname=None, port=9877):
+        self.remove_ifname()
         self.ifname = ifname
         if hostname != None:
             self.ctrl = wpaspy.Ctrl(hostname, port)
@@ -99,11 +178,9 @@ class WpaSupplicant:
             self.mon.attach()
 
     def remove_ifname(self):
-        if self.ifname:
-            self.mon.detach()
-            self.mon = None
-            self.ctrl = None
-            self.ifname = None
+        self.close_monitor_mon()
+        self.close_control_ctrl()
+        self.ifname = None
 
     def get_ctrl_iface_port(self, ifname):
         if self.hostname is None:
@@ -212,17 +289,12 @@ class WpaSupplicant:
     def reset(self):
         self.dump_monitor()
         res = self.request("FLUSH")
-        if not "OK" in res:
+        if "OK" not in res:
             logger.info("FLUSH to " + self.ifname + " failed: " + res)
         self.global_request("REMOVE_NETWORK all")
         self.global_request("SET p2p_no_group_iface 1")
         self.global_request("P2P_FLUSH")
-        if self.gctrl_mon:
-            try:
-                self.gctrl_mon.detach()
-            except:
-                pass
-            self.gctrl_mon = None
+        self.close_monitor_group()
         self.group_ifname = None
         self.dump_monitor()
 
@@ -240,7 +312,7 @@ class WpaSupplicant:
             iter = iter + 1
         if iter == 60:
             logger.error(self.ifname + ": Driver scan state did not clear")
-            print "Trying to clear cfg80211/mac80211 scan state"
+            print("Trying to clear cfg80211/mac80211 scan state")
             status, buf = self.host.execute(["ifconfig", self.ifname, "down"])
             if status != 0:
                 logger.info("ifconfig failed: " + buf)
@@ -258,8 +330,10 @@ class WpaSupplicant:
         if not self.ping():
             logger.info("No PING response from " + self.ifname + " after reset")
 
-    def set(self, field, value):
-        if not "OK" in self.request("SET " + field + " " + value):
+    def set(self, field, value, allow_fail=False):
+        if "OK" not in self.request("SET " + field + " " + value):
+            if allow_fail:
+                return
             raise Exception("Failed to set wpa_supplicant parameter " + field)
 
     def add_network(self):
@@ -323,7 +397,7 @@ class WpaSupplicant:
         for l in lines:
             if "network id" in l:
                 continue
-            [id,ssid,bssid,flags] = l.split('\t')
+            [id, ssid, bssid, flags] = l.split('\t')
             network = {}
             network['id'] = id
             network['ssid'] = ssid
@@ -376,20 +450,20 @@ class WpaSupplicant:
     def add_cred_values(self, params):
         id = self.add_cred()
 
-        quoted = [ "realm", "username", "password", "domain", "imsi",
-                   "excluded_ssid", "milenage", "ca_cert", "client_cert",
-                   "private_key", "domain_suffix_match", "provisioning_sp",
-                   "roaming_partner", "phase1", "phase2", "private_key_passwd",
-                   "roaming_consortiums" ]
+        quoted = ["realm", "username", "password", "domain", "imsi",
+                  "excluded_ssid", "milenage", "ca_cert", "client_cert",
+                  "private_key", "domain_suffix_match", "provisioning_sp",
+                  "roaming_partner", "phase1", "phase2", "private_key_passwd",
+                  "roaming_consortiums"]
         for field in quoted:
             if field in params:
                 self.set_cred_quoted(id, field, params[field])
 
-        not_quoted = [ "eap", "roaming_consortium", "priority",
-                       "required_roaming_consortium", "sp_priority",
-                       "max_bss_load", "update_identifier", "req_conn_capab",
-                       "min_dl_bandwidth_home", "min_ul_bandwidth_home",
-                       "min_dl_bandwidth_roaming", "min_ul_bandwidth_roaming" ]
+        not_quoted = ["eap", "roaming_consortium", "priority",
+                      "required_roaming_consortium", "sp_priority",
+                      "max_bss_load", "update_identifier", "req_conn_capab",
+                      "min_dl_bandwidth_home", "min_ul_bandwidth_home",
+                      "min_dl_bandwidth_roaming", "min_ul_bandwidth_roaming"]
         for field in not_quoted:
             if field in params:
                 self.set_cred(id, field, params[field])
@@ -436,9 +510,9 @@ class WpaSupplicant:
         vals = dict()
         for l in lines:
             try:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
                 vals[name] = value
-            except ValueError, e:
+            except ValueError as e:
                 logger.info(self.ifname + ": Ignore unexpected STATUS line: " + l)
         return vals
 
@@ -458,7 +532,7 @@ class WpaSupplicant:
         vals = dict()
         for l in lines:
             try:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
             except ValueError:
                 logger.info(self.ifname + ": Ignore unexpected status line: " + l)
                 continue
@@ -482,7 +556,7 @@ class WpaSupplicant:
         vals = dict()
         for l in lines:
             try:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
             except ValueError:
                 logger.info(self.ifname + ": Ignore unexpected status-driver line: " + l)
                 continue
@@ -505,9 +579,9 @@ class WpaSupplicant:
         vals = dict()
         for l in lines:
             try:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
                 vals[name] = value
-            except ValueError, e:
+            except ValueError as e:
                 logger.info(self.ifname + ": Ignore unexpected MIB line: " + l)
         return vals
 
@@ -523,6 +597,15 @@ class WpaSupplicant:
         except:
             res = self.p2p_dev_addr()
         return res
+
+    def get_addr(self, group=False):
+        dev_addr = self.own_addr()
+        if not group:
+            addr = self.get_status_field('address')
+            if addr:
+                dev_addr = addr
+
+        return dev_addr
 
     def p2p_listen(self):
         return self.global_request("P2P_LISTEN")
@@ -589,7 +672,7 @@ class WpaSupplicant:
         vals = dict()
         for l in lines:
             if '=' in l:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
                 vals[name] = value
         return vals
 
@@ -627,7 +710,8 @@ class WpaSupplicant:
             else:
                 port = self.get_ctrl_iface_port(self.group_ifname)
                 self.gctrl_mon = wpaspy.Ctrl(self.hostname, port)
-            self.gctrl_mon.attach()
+            if self.monitor:
+                self.gctrl_mon.attach()
         except:
             logger.debug("Could not open monitor socket for group interface")
             self.gctrl_mon = None
@@ -646,7 +730,7 @@ class WpaSupplicant:
             res['passphrase'] = p.group(1)
         res['go_dev_addr'] = s[7]
 
-        if len(s) > 8 and len(s[8]) > 0:
+        if len(s) > 8 and len(s[8]) > 0 and "[PERSISTENT]" not in s[8]:
             res['ip_addr'] = s[8]
         if len(s) > 9:
             res['ip_mask'] = s[9]
@@ -764,12 +848,14 @@ class WpaSupplicant:
             return self.group_form_result(ev, expect_failure, go_neg_res)
         raise Exception("P2P_CONNECT failed")
 
-    def wait_event(self, events, timeout=10):
+    def _wait_event(self, mon, pfx, events, timeout):
+        if not isinstance(events, list):
+            raise Exception("WpaSupplicant._wait_event() called with incorrect events argument type")
         start = os.times()[4]
         while True:
-            while self.mon.pending():
-                ev = self.mon.recv()
-                logger.debug(self.dbg + ": " + ev)
+            while mon.pending():
+                ev = mon.recv()
+                logger.debug(self.dbg + pfx + ev)
                 for event in events:
                     if event in ev:
                         return ev
@@ -777,31 +863,22 @@ class WpaSupplicant:
             remaining = start + timeout - now
             if remaining <= 0:
                 break
-            if not self.mon.pending(timeout=remaining):
+            if not mon.pending(timeout=remaining):
                 break
         return None
 
+    def wait_event(self, events, timeout=10):
+        return self._wait_event(self.mon, ": ", events, timeout)
+
     def wait_global_event(self, events, timeout):
         if self.global_iface is None:
-            self.wait_event(events, timeout)
-        else:
-            start = os.times()[4]
-            while True:
-                while self.global_mon.pending():
-                    ev = self.global_mon.recv()
-                    logger.debug(self.global_dbg + self.ifname + "(global): " + ev)
-                    for event in events:
-                        if event in ev:
-                            return ev
-                now = os.times()[4]
-                remaining = start + timeout - now
-                if remaining <= 0:
-                    break
-                if not self.global_mon.pending(timeout=remaining):
-                    break
-        return None
+            return self.wait_event(events, timeout)
+        return self._wait_event(self.global_mon, "(global): ",
+                                events, timeout)
 
     def wait_group_event(self, events, timeout=10):
+        if not isinstance(events, list):
+            raise Exception("WpaSupplicant.wait_group_event() called with incorrect events argument type")
         if self.group_ifname and self.group_ifname != self.ifname:
             if self.gctrl_mon is None:
                 return None
@@ -824,12 +901,7 @@ class WpaSupplicant:
         return self.wait_event(events, timeout)
 
     def wait_go_ending_session(self):
-        if self.gctrl_mon:
-            try:
-                self.gctrl_mon.detach()
-            except:
-                pass
-            self.gctrl_mon = None
+        self.close_monitor_group()
         timeout = 3 if self.hostname is None else 10
         ev = self.wait_global_event(["P2P-GROUP-REMOVED"], timeout=timeout)
         if ev is None:
@@ -837,26 +909,21 @@ class WpaSupplicant:
         if "reason=GO_ENDING_SESSION" not in ev:
             raise Exception("Unexpected group removal reason")
 
-    def dump_monitor(self):
+    def dump_monitor(self, mon=True, global_mon=True):
         count_iface = 0
         count_global = 0
-        while self.mon.pending():
+        while mon and self.monitor and self.mon.pending():
             ev = self.mon.recv()
             logger.debug(self.dbg + ": " + ev)
             count_iface += 1
-        while self.global_mon and self.global_mon.pending():
+        while global_mon and self.monitor and self.global_mon and self.global_mon.pending():
             ev = self.global_mon.recv()
             logger.debug(self.global_dbg + self.ifname + "(global): " + ev)
             count_global += 1
         return (count_iface, count_global)
 
     def remove_group(self, ifname=None):
-        if self.gctrl_mon:
-            try:
-                self.gctrl_mon.detach()
-            except:
-                pass
-            self.gctrl_mon = None
+        self.close_monitor_group()
         if ifname is None:
             ifname = self.group_ifname if self.group_ifname else self.ifname
         if "OK" not in self.global_request("P2P_GROUP_REMOVE " + ifname):
@@ -958,7 +1025,7 @@ class WpaSupplicant:
             "mean_data_rate": 1500,
         }
         cmd = "WMM_AC_ADDTS %s tsid=%d up=%d" % (direction, tsid, up)
-        for (key, value) in params.iteritems():
+        for (key, value) in params.items():
             cmd += " %s=%d" % (key, value)
         if extra:
             cmd += " " + extra
@@ -980,7 +1047,7 @@ class WpaSupplicant:
         if "tsid=%d" % (tsid) not in ev:
             raise Exception("ADDTS failed (invalid tsid in TSPEC-ADDED)")
 
-        if not (tsid, up) in self.tspecs():
+        if (tsid, up) not in self.tspecs():
             raise Exception("ADDTS failed (tsid not in tspec list)")
 
     def del_ts(self, tsid):
@@ -1005,36 +1072,54 @@ class WpaSupplicant:
         elif ssid2:
             self.set_network(id, "ssid", ssid2)
 
-        quoted = [ "psk", "identity", "anonymous_identity", "password",
-                   "ca_cert", "client_cert", "private_key",
-                   "private_key_passwd", "ca_cert2", "client_cert2",
-                   "private_key2", "phase1", "phase2", "domain_suffix_match",
-                   "altsubject_match", "subject_match", "pac_file", "dh_file",
-                   "bgscan", "ht_mcs", "id_str", "openssl_ciphers",
-                   "domain_match", "dpp_connector", "sae_password",
-                   "sae_password_id" ]
+        quoted = ["psk", "identity", "anonymous_identity", "password",
+                  "machine_identity", "machine_password",
+                  "ca_cert", "client_cert", "private_key",
+                  "private_key_passwd", "ca_cert2", "client_cert2",
+                  "private_key2", "phase1", "phase2", "domain_suffix_match",
+                  "altsubject_match", "subject_match", "pac_file", "dh_file",
+                  "bgscan", "ht_mcs", "id_str", "openssl_ciphers",
+                  "domain_match", "dpp_connector", "sae_password",
+                  "sae_password_id", "check_cert_subject",
+                  "machine_ca_cert", "machine_client_cert",
+                  "machine_private_key", "machine_phase2"]
         for field in quoted:
             if field in kwargs and kwargs[field]:
                 self.set_network_quoted(id, field, kwargs[field])
 
-        not_quoted = [ "proto", "key_mgmt", "ieee80211w", "pairwise",
-                       "group", "wep_key0", "wep_key1", "wep_key2", "wep_key3",
-                       "wep_tx_keyidx", "scan_freq", "freq_list", "eap",
-                       "eapol_flags", "fragment_size", "scan_ssid", "auth_alg",
-                       "wpa_ptk_rekey", "disable_ht", "disable_vht", "bssid",
-                       "disable_max_amsdu", "ampdu_factor", "ampdu_density",
-                       "disable_ht40", "disable_sgi", "disable_ldpc",
-                       "ht40_intolerant", "update_identifier", "mac_addr",
-                       "erp", "bg_scan_period", "bssid_blacklist",
-                       "bssid_whitelist", "mem_only_psk", "eap_workaround",
-                       "engine", "fils_dh_group", "bssid_hint",
-                       "dpp_csign", "dpp_csign_expiry",
-                       "dpp_netaccesskey", "dpp_netaccesskey_expiry",
-                       "group_mgmt", "owe_group",
-                       "roaming_consortium_selection" ]
+        not_quoted = ["proto", "key_mgmt", "ieee80211w", "pairwise",
+                      "group", "wep_key0", "wep_key1", "wep_key2", "wep_key3",
+                      "wep_tx_keyidx", "scan_freq", "freq_list", "eap",
+                      "eapol_flags", "fragment_size", "scan_ssid", "auth_alg",
+                      "wpa_ptk_rekey", "disable_ht", "disable_vht", "bssid",
+                      "disable_he",
+                      "disable_max_amsdu", "ampdu_factor", "ampdu_density",
+                      "disable_ht40", "disable_sgi", "disable_ldpc",
+                      "ht40_intolerant", "update_identifier", "mac_addr",
+                      "erp", "bg_scan_period", "bssid_ignore",
+                      "bssid_accept", "mem_only_psk", "eap_workaround",
+                      "engine", "fils_dh_group", "bssid_hint",
+                      "dpp_csign", "dpp_csign_expiry",
+                      "dpp_netaccesskey", "dpp_netaccesskey_expiry", "dpp_pfs",
+                      "group_mgmt", "owe_group", "owe_only",
+                      "owe_ptk_workaround",
+                      "transition_disable", "sae_pk",
+                      "roaming_consortium_selection", "ocv",
+                      "multi_ap_backhaul_sta", "rx_stbc", "tx_stbc",
+                      "ft_eap_pmksa_caching", "beacon_prot",
+                      "wpa_deny_ptk0_rekey"]
         for field in not_quoted:
             if field in kwargs and kwargs[field]:
                 self.set_network(id, field, kwargs[field])
+
+        known_args = {"raw_psk", "password_hex", "peerkey", "okc", "ocsp",
+                      "only_add_network", "wait_connect"}
+        unknown = set(kwargs.keys())
+        unknown -= set(quoted)
+        unknown -= set(not_quoted)
+        unknown -= known_args
+        if unknown:
+            raise Exception("Unknown WpaSupplicant::connect() arguments: " + str(unknown))
 
         if "raw_psk" in kwargs and kwargs['raw_psk']:
             self.set_network(id, "psk", kwargs['raw_psk'])
@@ -1060,6 +1145,8 @@ class WpaSupplicant:
 
     def scan(self, type=None, freq=None, no_wait=False, only_new=False,
              passive=False):
+        if not no_wait:
+            self.dump_monitor()
         if type:
             cmd = "SCAN TYPE=" + type
         else:
@@ -1072,8 +1159,9 @@ class WpaSupplicant:
             cmd += " passive=1"
         if not no_wait:
             self.dump_monitor()
-        if not "OK" in self.request(cmd):
-            raise Exception("Failed to trigger scan")
+        res = self.request(cmd)
+        if "OK" not in res:
+            raise Exception("Failed to trigger scan: " + str(res))
         if no_wait:
             return
         ev = self.wait_event(["CTRL-EVENT-SCAN-RESULTS",
@@ -1099,24 +1187,57 @@ class WpaSupplicant:
         self.scan(freq=freq, only_new=True)
         res = self.request("SCAN_RESULTS")
         if len(res.splitlines()) > 1:
+            logger.debug("Scan results remaining after first attempt to flush the results:\n" + res)
             self.request("BSS_FLUSH 0")
             self.scan(freq=2422, only_new=True)
             res = self.request("SCAN_RESULTS")
             if len(res.splitlines()) > 1:
                 logger.info("flush_scan_cache: Could not clear all BSS entries. These remain:\n" + res)
 
-    def roam(self, bssid, fail_test=False):
+    def disconnect_and_stop_scan(self):
+        self.request("DISCONNECT")
+        res = self.request("ABORT_SCAN")
+        for i in range(2 if "OK" in res else 1):
+                self.wait_event(["CTRL-EVENT-DISCONNECTED",
+                                 "CTRL-EVENT-SCAN-RESULTS"], timeout=0.5)
+        self.dump_monitor()
+
+    def roam(self, bssid, fail_test=False, assoc_reject_ok=False,
+             check_bssid=True):
         self.dump_monitor()
         if "OK" not in self.request("ROAM " + bssid):
             raise Exception("ROAM failed")
         if fail_test:
-            ev = self.wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
-            if ev is not None:
+            if assoc_reject_ok:
+                ev = self.wait_event(["CTRL-EVENT-CONNECTED",
+                                      "CTRL-EVENT-DISCONNECTED",
+                                      "CTRL-EVENT-ASSOC-REJECT"], timeout=1)
+            else:
+                ev = self.wait_event(["CTRL-EVENT-CONNECTED",
+                                      "CTRL-EVENT-DISCONNECTED"], timeout=1)
+            if ev and "CTRL-EVENT-DISCONNECTED" in ev:
+                self.dump_monitor()
+                return
+            if ev is not None and "CTRL-EVENT-ASSOC-REJECT" not in ev:
                 raise Exception("Unexpected connection")
             self.dump_monitor()
             return
-        self.wait_connected(timeout=10, error="Roaming with the AP timed out")
+        if assoc_reject_ok:
+            ev = self.wait_event(["CTRL-EVENT-CONNECTED",
+                                  "CTRL-EVENT-DISCONNECTED"], timeout=10)
+        else:
+            ev = self.wait_event(["CTRL-EVENT-CONNECTED",
+                                      "CTRL-EVENT-DISCONNECTED",
+                                  "CTRL-EVENT-ASSOC-REJECT"], timeout=10)
+        if ev is None:
+            raise Exception("Roaming with the AP timed out")
+        if "CTRL-EVENT-ASSOC-REJECT" in ev:
+            raise Exception("Roaming association rejected")
+        if "CTRL-EVENT-DISCONNECTED" in ev:
+            raise Exception("Unexpected disconnection when waiting for roam to complete")
         self.dump_monitor()
+        if check_bssid and self.get_status_field('bssid') != bssid:
+            raise Exception("Did not roam to correct BSSID")
 
     def roam_over_ds(self, bssid, fail_test=False):
         self.dump_monitor()
@@ -1128,7 +1249,12 @@ class WpaSupplicant:
                 raise Exception("Unexpected connection")
             self.dump_monitor()
             return
-        self.wait_connected(timeout=10, error="Roaming with the AP timed out")
+        ev = self.wait_event(["CTRL-EVENT-CONNECTED",
+                              "CTRL-EVENT-ASSOC-REJECT"], timeout=10)
+        if ev is None:
+            raise Exception("Roaming with the AP timed out")
+        if "CTRL-EVENT-ASSOC-REJECT" in ev:
+            raise Exception("Roaming association rejected")
         self.dump_monitor()
 
     def wps_reg(self, bssid, pin, new_ssid=None, key_mgmt=None, cipher=None,
@@ -1136,8 +1262,9 @@ class WpaSupplicant:
         self.dump_monitor()
         if new_ssid:
             self.request("WPS_REG " + bssid + " " + pin + " " +
-                         new_ssid.encode("hex") + " " + key_mgmt + " " +
-                         cipher + " " + new_passphrase.encode("hex"))
+                         binascii.hexlify(new_ssid.encode()).decode() + " " +
+                         key_mgmt + " " + cipher + " " +
+                         binascii.hexlify(new_passphrase.encode()).decode())
             if no_wait:
                 return
             ev = self.wait_event(["WPS-SUCCESS"], timeout=15)
@@ -1182,7 +1309,7 @@ class WpaSupplicant:
         lines = res.splitlines()
         vals = dict()
         for l in lines:
-            [name,value] = l.split('=', 1)
+            [name, value] = l.split('=', 1)
             vals[name] = value
         if len(vals) == 0:
             return None
@@ -1196,10 +1323,10 @@ class WpaSupplicant:
                 continue
             vals = dict()
             try:
-                [index,aa,pmkid,expiration,opportunistic] = l.split(' ')
+                [index, aa, pmkid, expiration, opportunistic] = l.split(' ')
                 cache_id = None
             except ValueError:
-                [index,aa,pmkid,expiration,opportunistic,cache_id] = l.split(' ')
+                [index, aa, pmkid, expiration, opportunistic, cache_id] = l.split(' ')
             vals['index'] = index
             vals['pmkid'] = pmkid
             vals['expiration'] = expiration
@@ -1207,6 +1334,14 @@ class WpaSupplicant:
             if cache_id != None:
                 vals['cache_id'] = cache_id
             return vals
+        return None
+
+    def get_pmk(self, network_id):
+        bssid = self.get_status_field('bssid')
+        res = self.request("PMKSA_GET %d" % network_id)
+        for val in res.splitlines():
+            if val.startswith(bssid):
+                return val.split(' ')[2]
         return None
 
     def get_sta(self, addr, info=None, next=False):
@@ -1225,7 +1360,7 @@ class WpaSupplicant:
                 vals['addr'] = l
                 first = False
             else:
-                [name,value] = l.split('=', 1)
+                [name, value] = l.split('=', 1)
                 vals[name] = value
         return vals
 
@@ -1235,17 +1370,17 @@ class WpaSupplicant:
             return None
         msg = {}
         items = ev.split(' ')
-        field,val = items[1].split('=')
+        field, val = items[1].split('=')
         if field != "freq":
             raise Exception("Unexpected MGMT-RX event format: " + ev)
         msg['freq'] = val
 
-        field,val = items[2].split('=')
+        field, val = items[2].split('=')
         if field != "datarate":
             raise Exception("Unexpected MGMT-RX event format: " + ev)
         msg['datarate'] = val
 
-        field,val = items[3].split('=')
+        field, val = items[3].split('=')
         if field != "ssi_signal":
             raise Exception("Unexpected MGMT-RX event format: " + ev)
         msg['ssi_signal'] = val
@@ -1294,7 +1429,7 @@ class WpaSupplicant:
         lines = res.splitlines()
         vals = dict()
         for l in lines:
-            [name,value] = l.split('=', 1)
+            [name, value] = l.split('=', 1)
             vals[name] = value
         return vals
 
@@ -1318,3 +1453,197 @@ class WpaSupplicant:
 
     def note(self, txt):
         self.request("NOTE " + txt)
+
+    def save_config(self):
+        if "OK" not in self.request("SAVE_CONFIG"):
+            raise Exception("Failed to save configuration file")
+
+    def wait_regdom(self, country_ie=False):
+        for i in range(5):
+            ev = self.wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=1)
+            if ev is None:
+                break
+            if country_ie:
+                if "init=COUNTRY_IE" in ev:
+                    break
+            else:
+                break
+
+    def dpp_qr_code(self, uri):
+        res = self.request("DPP_QR_CODE " + uri)
+        if "FAIL" in res:
+            raise Exception("Failed to parse QR Code URI")
+        return int(res)
+
+    def dpp_nfc_uri(self, uri):
+        res = self.request("DPP_NFC_URI " + uri)
+        if "FAIL" in res:
+            raise Exception("Failed to parse NFC URI")
+        return int(res)
+
+    def dpp_bootstrap_gen(self, type="qrcode", chan=None, mac=None, info=None,
+                          curve=None, key=None):
+        cmd = "DPP_BOOTSTRAP_GEN type=" + type
+        if chan:
+            cmd += " chan=" + chan
+        if mac:
+            if mac is True:
+                mac = self.own_addr()
+            cmd += " mac=" + mac.replace(':', '')
+        if info:
+            cmd += " info=" + info
+        if curve:
+            cmd += " curve=" + curve
+        if key:
+            cmd += " key=" + key
+        res = self.request(cmd)
+        if "FAIL" in res:
+            raise Exception("Failed to generate bootstrapping info")
+        return int(res)
+
+    def dpp_bootstrap_set(self, id, conf=None, configurator=None, ssid=None,
+                          extra=None):
+        cmd = "DPP_BOOTSTRAP_SET %d" % id
+        if ssid:
+            cmd += " ssid=" + binascii.hexlify(ssid.encode()).decode()
+        if extra:
+            cmd += " " + extra
+        if conf:
+            cmd += " conf=" + conf
+        if configurator is not None:
+            cmd += " configurator=%d" % configurator
+        if "OK" not in self.request(cmd):
+            raise Exception("Failed to set bootstrapping parameters")
+
+    def dpp_listen(self, freq, netrole=None, qr=None, role=None):
+        cmd = "DPP_LISTEN " + str(freq)
+        if netrole:
+            cmd += " netrole=" + netrole
+        if qr:
+            cmd += " qr=" + qr
+        if role:
+            cmd += " role=" + role
+        if "OK" not in self.request(cmd):
+            raise Exception("Failed to start listen operation")
+
+    def dpp_auth_init(self, peer=None, uri=None, conf=None, configurator=None,
+                      extra=None, own=None, role=None, neg_freq=None,
+                      ssid=None, passphrase=None, expect_fail=False,
+                      tcp_addr=None, tcp_port=None, conn_status=False,
+                      ssid_charset=None, nfc_uri=None, netrole=None,
+                      csrattrs=None):
+        cmd = "DPP_AUTH_INIT"
+        if peer is None:
+            if nfc_uri:
+                peer = self.dpp_nfc_uri(nfc_uri)
+            else:
+                peer = self.dpp_qr_code(uri)
+        cmd += " peer=%d" % peer
+        if own is not None:
+            cmd += " own=%d" % own
+        if role:
+            cmd += " role=" + role
+        if extra:
+            cmd += " " + extra
+        if conf:
+            cmd += " conf=" + conf
+        if configurator is not None:
+            cmd += " configurator=%d" % configurator
+        if neg_freq:
+            cmd += " neg_freq=%d" % neg_freq
+        if ssid:
+            cmd += " ssid=" + binascii.hexlify(ssid.encode()).decode()
+        if ssid_charset:
+            cmd += " ssid_charset=%d" % ssid_charset
+        if passphrase:
+            cmd += " pass=" + binascii.hexlify(passphrase.encode()).decode()
+        if tcp_addr:
+            cmd += " tcp_addr=" + tcp_addr
+        if tcp_port:
+            cmd += " tcp_port=" + tcp_port
+        if conn_status:
+            cmd += " conn_status=1"
+        if netrole:
+            cmd += " netrole=" + netrole
+        if csrattrs:
+            cmd += " csrattrs=" + csrattrs
+        res = self.request(cmd)
+        if expect_fail:
+            if "FAIL" not in res:
+                raise Exception("DPP authentication started unexpectedly")
+            return
+        if "OK" not in res:
+            raise Exception("Failed to initiate DPP Authentication")
+        return int(peer)
+
+    def dpp_pkex_init(self, identifier, code, role=None, key=None, curve=None,
+                      extra=None, use_id=None, allow_fail=False):
+        if use_id is None:
+            id1 = self.dpp_bootstrap_gen(type="pkex", key=key, curve=curve)
+        else:
+            id1 = use_id
+        cmd = "own=%d " % id1
+        if identifier:
+            cmd += "identifier=%s " % identifier
+        cmd += "init=1 "
+        if role:
+            cmd += "role=%s " % role
+        if extra:
+            cmd += extra + " "
+        cmd += "code=%s" % code
+        res = self.request("DPP_PKEX_ADD " + cmd)
+        if allow_fail:
+            return id1
+        if "FAIL" in res:
+            raise Exception("Failed to set PKEX data (initiator)")
+        return id1
+
+    def dpp_pkex_resp(self, freq, identifier, code, key=None, curve=None,
+                      listen_role=None, use_id=None):
+        if use_id is None:
+            id0 = self.dpp_bootstrap_gen(type="pkex", key=key, curve=curve)
+        else:
+            id0 = use_id
+        cmd = "own=%d " % id0
+        if identifier:
+            cmd += "identifier=%s " % identifier
+        cmd += "code=%s" % code
+        res = self.request("DPP_PKEX_ADD " + cmd)
+        if "FAIL" in res:
+            raise Exception("Failed to set PKEX data (responder)")
+        self.dpp_listen(freq, role=listen_role)
+        return id0
+
+    def dpp_configurator_add(self, curve=None, key=None):
+        cmd = "DPP_CONFIGURATOR_ADD"
+        if curve:
+            cmd += " curve=" + curve
+        if key:
+            cmd += " key=" + key
+        res = self.request(cmd)
+        if "FAIL" in res:
+            raise Exception("Failed to add configurator")
+        return int(res)
+
+    def dpp_configurator_remove(self, conf_id):
+        res = self.request("DPP_CONFIGURATOR_REMOVE %d" % conf_id)
+        if "OK" not in res:
+            raise Exception("DPP_CONFIGURATOR_REMOVE failed")
+
+    def get_ptksa(self, bssid, cipher):
+        res = self.request("PTKSA_CACHE_LIST")
+        lines = res.splitlines()
+        for l in lines:
+            if bssid not in l or cipher not in l:
+                continue
+
+            vals = dict()
+            [index, addr, cipher, expiration, tk, kdk] = l.split(' ', 5)
+            vals['index'] = index
+            vals['addr'] = addr
+            vals['cipher'] = cipher
+            vals['expiration'] = expiration
+            vals['tk'] = tk
+            vals['kdk'] = kdk
+            return vals
+        return None

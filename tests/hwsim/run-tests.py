@@ -1,7 +1,7 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Test case executor
-# Copyright (c) 2013-2015, Jouni Malinen <j@w1.fi>
+# Copyright (c) 2013-2019, Jouni Malinen <j@w1.fi>
 #
 # This software may be distributed under the terms of the BSD license.
 # See README for more details.
@@ -47,9 +47,9 @@ def reset_devs(dev, apdev):
     for d in dev:
         try:
             d.reset()
-        except Exception, e:
+        except Exception as e:
             logger.info("Failed to reset device " + d.ifname)
-            print str(e)
+            print(str(e))
             ok = False
 
     wpas = None
@@ -59,10 +59,11 @@ def reset_devs(dev, apdev):
         for iface in ifaces:
             if iface.startswith("wlan"):
                 wpas.interface_remove(iface)
-    except Exception, e:
+    except Exception as e:
         pass
     if wpas:
         wpas.close_ctrl()
+        del wpas
 
     try:
         hapd = HostapdGlobal()
@@ -74,9 +75,10 @@ def reset_devs(dev, apdev):
         hapd.remove('wlan3-2')
         for ap in apdev:
             hapd.remove(ap['ifname'])
-    except Exception, e:
+        hapd.remove('as-erp')
+    except Exception as e:
         logger.info("Failed to remove hostapd interface")
-        print str(e)
+        print(str(e))
         ok = False
     return ok
 
@@ -84,7 +86,7 @@ def add_log_file(conn, test, run, type, path):
     if not os.path.exists(path):
         return
     contents = None
-    with open(path, 'r') as f:
+    with open(path, 'rb') as f:
         contents = f.read()
     if contents is None:
         return
@@ -93,9 +95,9 @@ def add_log_file(conn, test, run, type, path):
     try:
         conn.execute(sql, params)
         conn.commit()
-    except Exception, e:
-        print "sqlite: " + str(e)
-        print "sql: %r" % (params, )
+    except Exception as e:
+        print("sqlite: " + str(e))
+        print("sql: %r" % (params, ))
 
 def report(conn, prefill, build, commit, run, test, result, duration, logdir,
            sql_commit=True):
@@ -112,13 +114,13 @@ def report(conn, prefill, build, commit, run, test, result, duration, logdir,
             conn.execute(sql, params)
             if sql_commit:
                 conn.commit()
-        except Exception, e:
-            print "sqlite: " + str(e)
-            print "sql: %r" % (params, )
+        except Exception as e:
+            print("sqlite: " + str(e))
+            print("sql: %r" % (params, ))
 
         if result == "FAIL":
-            for log in [ "log", "log0", "log1", "log2", "log3", "log5",
-                         "hostapd", "dmesg", "hwsim0", "hwsim0.pcapng" ]:
+            for log in ["log", "log0", "log1", "log2", "log3", "log5",
+                        "hostapd", "dmesg", "hwsim0", "hwsim0.pcapng"]:
                 add_log_file(conn, test, run, log,
                              logdir + "/" + test + "." + log)
 
@@ -138,11 +140,11 @@ class DataCollector(object):
                                                stderr=open('/dev/null', 'w'),
                                                cwd=self._logdir)
             l = self._trace_cmd.stdout.read(7)
-            while self._trace_cmd.poll() is None and not 'STARTED' in l:
+            while self._trace_cmd.poll() is None and b'STARTED' not in l:
                 l += self._trace_cmd.stdout.read(1)
             res = self._trace_cmd.returncode
             if res:
-                print "Failed calling trace-cmd: returned exit status %d" % res
+                print("Failed calling trace-cmd: returned exit status %d" % res)
                 sys.exit(1)
         if self._dbus:
             output = os.path.abspath(os.path.join(self._logdir, '%s.dbus' % (self._testname, )))
@@ -152,11 +154,12 @@ class DataCollector(object):
                                               cwd=self._logdir)
             res = self._dbus_cmd.returncode
             if res:
-                print "Failed calling dbus-monitor: returned exit status %d" % res
+                print("Failed calling dbus-monitor: returned exit status %d" % res)
                 sys.exit(1)
     def __exit__(self, type, value, traceback):
         if self._tracing:
-            self._trace_cmd.stdin.write('DONE\n')
+            self._trace_cmd.stdin.write(b'DONE\n')
+            self._trace_cmd.stdin.flush()
             self._trace_cmd.wait()
         if self._dmesg:
             output = os.path.join(self._logdir, '%s.dmesg' % (self._testname, ))
@@ -180,9 +183,21 @@ def rename_log(logdir, basename, testname, dev):
         if dev:
             dev.relog()
             subprocess.call(['chown', '-f', getpass.getuser(), srcname])
-    except Exception, e:
+    except Exception as e:
         logger.info("Failed to rename log files")
         logger.info(e)
+
+def is_long_duration_test(t):
+    return hasattr(t, "long_duration_test") and t.long_duration_test
+
+def get_test_description(t):
+    if t.__doc__ is None:
+        desc = "MISSING DESCRIPTION"
+    else:
+        desc = t.__doc__
+    if is_long_duration_test(t):
+        desc += " [long]"
+    return desc
 
 def main():
     tests = []
@@ -194,7 +209,7 @@ def main():
             logger.debug("Import test cases from " + t)
             mod = __import__(m.group(1))
             test_modules.append(mod.__name__.replace('test_', '', 1))
-            for key,val in mod.__dict__.iteritems():
+            for key, val in mod.__dict__.items():
                 if key.startswith("test_"):
                     tests.append(val)
     test_names = list(set([t.__name__.replace('test_', '', 1) for t in tests]))
@@ -243,18 +258,36 @@ def main():
     parser.add_argument('-i', action='store_true', dest='stdin_ctrl',
                         help='stdin-controlled test case execution')
     parser.add_argument('tests', metavar='<test>', nargs='*', type=str,
-                        help='tests to run (only valid without -f)',
-                        choices=[[]] + test_names)
+                        help='tests to run (only valid without -f)')
 
     args = parser.parse_args()
 
     if (args.tests and args.testmodules) or (args.tests and args.mfile) or (args.testmodules and args.mfile):
-        print 'Invalid arguments - only one of (test, test modules, modules file) can be given.'
+        print('Invalid arguments - only one of (test, test modules, modules file) can be given.')
         sys.exit(2)
+
+    if args.tests:
+        fail = False
+        for t in args.tests:
+            if t.endswith('*'):
+                prefix = t.rstrip('*')
+                found = False
+                for tn in test_names:
+                    if tn.startswith(prefix):
+                        found = True
+                        break
+                if not found:
+                    print('Invalid arguments - test "%s" wildcard did not match' % t)
+                    fail = True
+            elif t not in test_names:
+                print('Invalid arguments - test "%s" not known' % t)
+                fail = True
+        if fail:
+            sys.exit(2)
 
     if args.database:
         if not sqlite3_imported:
-            print "No sqlite3 module found"
+            print("No sqlite3 module found")
             sys.exit(2)
         conn = sqlite3.connect(args.database)
         conn.execute('CREATE TABLE IF NOT EXISTS results (test,result,run,time,duration,build,commitid)')
@@ -274,38 +307,39 @@ def main():
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                    args.testmodules.append(line)
+                args.testmodules.append(line)
 
     tests_to_run = []
     if args.tests:
         for selected in args.tests:
             for t in tests:
                 name = t.__name__.replace('test_', '', 1)
-                if name == selected:
+                if selected.endswith('*'):
+                    prefix = selected.rstrip('*')
+                    if name.startswith(prefix):
+                        tests_to_run.append(t)
+                elif name == selected:
                     tests_to_run.append(t)
     else:
         for t in tests:
             name = t.__name__.replace('test_', '', 1)
             if args.testmodules:
-                if not t.__module__.replace('test_', '', 1) in args.testmodules:
+                if t.__module__.replace('test_', '', 1) not in args.testmodules:
                     continue
             tests_to_run.append(t)
 
     if args.update_tests_db:
         for t in tests_to_run:
             name = t.__name__.replace('test_', '', 1)
-            if t.__doc__ is None:
-                print name + " - MISSING DESCRIPTION"
-            else:
-                print name + " - " + t.__doc__
+            print(name + " - " + get_test_description(t))
             if conn:
                 sql = 'INSERT OR REPLACE INTO tests(test,description) VALUES (?, ?)'
-                params = (name, t.__doc__)
+                params = (name, get_test_description(t))
                 try:
                     conn.execute(sql, params)
-                except Exception, e:
-                    print "sqlite: " + str(e)
-                    print "sql: %r" % (params,)
+                except Exception as e:
+                    print("sqlite: " + str(e))
+                    print("sql: %r" % (params,))
         if conn:
             conn.commit()
             conn.close()
@@ -325,7 +359,7 @@ def main():
     logger.addHandler(stdout_handler)
 
     file_name = os.path.join(args.logdir, 'run-tests.log')
-    log_handler = logging.FileHandler(file_name)
+    log_handler = logging.FileHandler(file_name, encoding='utf-8')
     log_handler.setLevel(logging.DEBUG)
     fmt = "%(asctime)s %(levelname)s %(message)s"
     log_formatter = logging.Formatter(fmt)
@@ -335,8 +369,8 @@ def main():
     dev0 = WpaSupplicant('wlan0', '/tmp/wpas-wlan0')
     dev1 = WpaSupplicant('wlan1', '/tmp/wpas-wlan1')
     dev2 = WpaSupplicant('wlan2', '/tmp/wpas-wlan2')
-    dev = [ dev0, dev1, dev2 ]
-    apdev = [ ]
+    dev = [dev0, dev1, dev2]
+    apdev = []
     apdev.append({"ifname": 'wlan3', "bssid": "02:00:00:00:03:00"})
     apdev.append({"ifname": 'wlan4', "bssid": "02:00:00:00:04:00"})
 
@@ -377,7 +411,7 @@ def main():
         logger.info("Parallel execution - %d/%d" % (split_server, split_total))
         split_server -= 1
         tests_to_run.sort(key=lambda t: t.__name__)
-        tests_to_run = [x for i,x in enumerate(tests_to_run) if i % split_total == split_server]
+        tests_to_run = [x for i, x in enumerate(tests_to_run) if i % split_total == split_server]
 
     if args.shuffle_tests:
         from random import shuffle
@@ -385,13 +419,19 @@ def main():
 
     count = 0
     if args.stdin_ctrl:
-        print "READY"
+        print("READY")
         sys.stdout.flush()
         num_tests = 0
     else:
         num_tests = len(tests_to_run)
     if args.stdin_ctrl:
         set_term_echo(sys.stdin.fileno(), False)
+
+    check_country_00 = True
+    for d in dev:
+        if d.get_driver_status_field("country") != "00":
+            check_country_00 = False
+
     while True:
         if args.stdin_ctrl:
             test = sys.stdin.readline()
@@ -407,7 +447,7 @@ def main():
                     t = tt
                     break
             if not t:
-                print "NOT-FOUND"
+                print("NOT-FOUND")
                 sys.stdout.flush()
                 continue
         else:
@@ -415,13 +455,36 @@ def main():
                 break
             t = tests_to_run.pop(0)
 
+        if dev[0].get_driver_status_field("country") == "98":
+            # Work around cfg80211 regulatory issues in clearing intersected
+            # country code 98. Need to make station disconnect without any
+            # other wiphy being active in the system.
+            logger.info("country=98 workaround - try to clear state")
+            id = dev[1].add_network()
+            dev[1].set_network(id, "mode", "2")
+            dev[1].set_network_quoted(id, "ssid", "country98")
+            dev[1].set_network(id, "key_mgmt", "NONE")
+            dev[1].set_network(id, "frequency", "2412")
+            dev[1].set_network(id, "scan_freq", "2412")
+            dev[1].select_network(id)
+            ev = dev[1].wait_event(["CTRL-EVENT-CONNECTED"])
+            if ev:
+                dev[0].connect("country98", key_mgmt="NONE", scan_freq="2412")
+                dev[1].request("DISCONNECT")
+                dev[0].wait_disconnected()
+                dev[0].disconnect_and_stop_scan()
+            dev[0].reset()
+            dev[1].reset()
+            dev[0].dump_monitor()
+            dev[1].dump_monitor()
+
         name = t.__name__.replace('test_', '', 1)
         open('/dev/kmsg', 'w').write('running hwsim test case %s\n' % name)
         if log_handler:
             log_handler.stream.close()
             logger.removeHandler(log_handler)
             file_name = os.path.join(args.logdir, name + '.log')
-            log_handler = logging.FileHandler(file_name)
+            log_handler = logging.FileHandler(file_name, encoding='utf-8')
             log_handler.setLevel(logging.DEBUG)
             log_handler.setFormatter(log_formatter)
             logger.addHandler(log_handler)
@@ -432,7 +495,7 @@ def main():
             msg = "START {} {}/{}".format(name, count, num_tests)
             logger.info(msg)
             if args.loglevel == logging.WARNING:
-                print msg
+                print(msg)
                 sys.stdout.flush()
             if t.__doc__:
                 logger.info("Test: " + t.__doc__)
@@ -446,73 +509,106 @@ def main():
                     if not d.global_ping():
                         raise Exception("Global PING failed for {}".format(d.ifname))
                     d.request("NOTE TEST-START " + name)
-                except Exception, e:
+                except Exception as e:
                     logger.info("Failed to issue TEST-START before " + name + " for " + d.ifname)
                     logger.info(e)
-                    print "FAIL " + name + " - could not start test"
+                    print("FAIL " + name + " - could not start test")
                     if conn:
                         conn.close()
                         conn = None
                     if args.stdin_ctrl:
                         set_term_echo(sys.stdin.fileno(), True)
                     sys.exit(1)
+            skip_reason = None
             try:
-                if t.func_code.co_argcount > 2:
+                if is_long_duration_test(t) and not args.long:
+                    raise HwsimSkip("Skip test case with long duration due to --long not specified")
+                if t.__code__.co_argcount > 2:
                     params = {}
                     params['logdir'] = args.logdir
-                    params['long'] = args.long
+                    params['name'] = name
+                    params['prefix'] = os.path.join(args.logdir, name)
                     t(dev, apdev, params)
-                elif t.func_code.co_argcount > 1:
+                elif t.__code__.co_argcount > 1:
                     t(dev, apdev)
                 else:
                     t(dev)
                 result = "PASS"
-            except HwsimSkip, e:
+                if check_country_00:
+                    for d in dev:
+                        country = d.get_driver_status_field("country")
+                        if country is None:
+                            logger.info(d.ifname + ": Could not fetch country code after the test case run")
+                        elif country != "00":
+                            d.dump_monitor()
+                            logger.info(d.ifname + ": Country code not reset back to 00: is " + country)
+                            print(d.ifname + ": Country code not reset back to 00: is " + country)
+                            result = "FAIL"
+
+                            # Try to wait for cfg80211 regulatory state to
+                            # clear.
+                            d.cmd_execute(['iw', 'reg', 'set', '00'])
+                            for i in range(5):
+                                time.sleep(1)
+                                country = d.get_driver_status_field("country")
+                                if country == "00":
+                                    break
+                            if country == "00":
+                                print(d.ifname + ": Country code cleared back to 00")
+                                logger.info(d.ifname + ": Country code cleared back to 00")
+                            else:
+                                print("Country code remains set - expect following test cases to fail")
+                                logger.info("Country code remains set - expect following test cases to fail")
+                            break
+            except HwsimSkip as e:
                 logger.info("Skip test case: %s" % e)
+                skip_reason = e
                 result = "SKIP"
-            except NameError, e:
+            except NameError as e:
                 import traceback
                 logger.info(e)
                 traceback.print_exc()
                 result = "FAIL"
-            except Exception, e:
+            except Exception as e:
                 import traceback
                 logger.info(e)
                 traceback.print_exc()
                 if args.loglevel == logging.WARNING:
-                    print "Exception: " + str(e)
+                    print("Exception: " + str(e))
                 result = "FAIL"
             open('/dev/kmsg', 'w').write('TEST-STOP %s @%.6f\n' % (name, time.time()))
             for d in dev:
                 try:
                     d.dump_monitor()
                     d.request("NOTE TEST-STOP " + name)
-                except Exception, e:
+                except Exception as e:
                     logger.info("Failed to issue TEST-STOP after {} for {}".format(name, d.ifname))
                     logger.info(e)
                     result = "FAIL"
             if args.no_reset:
-                print "Leaving devices in current state"
+                print("Leaving devices in current state")
             else:
                 reset_ok = reset_devs(dev, apdev)
             wpas = None
             try:
-                wpas = WpaSupplicant(global_iface="/tmp/wpas-wlan5")
+                wpas = WpaSupplicant(global_iface="/tmp/wpas-wlan5",
+                                     monitor=False)
                 rename_log(args.logdir, 'log5', name, wpas)
                 if not args.no_reset:
                     wpas.remove_ifname()
-            except Exception, e:
+            except Exception as e:
                 pass
             if wpas:
                 wpas.close_ctrl()
+                del wpas
 
             for i in range(0, 3):
                 rename_log(args.logdir, 'log' + str(i), name, dev[i])
             try:
                 hapd = HostapdGlobal()
-            except Exception, e:
-                print "Failed to connect to hostapd interface"
-                print str(e)
+            except Exception as e:
+                print("Failed to connect to hostapd interface")
+                print(str(e))
                 reset_ok = False
                 result = "FAIL"
                 hapd = None
@@ -554,11 +650,13 @@ def main():
         result = "{} {} {} {}".format(result, name, diff.total_seconds(), end)
         logger.info(result)
         if args.loglevel == logging.WARNING:
-            print result
+            print(result)
+            if skip_reason:
+                print("REASON", skip_reason)
             sys.stdout.flush()
 
         if not reset_ok:
-            print "Terminating early due to device reset failure"
+            print("Terminating early due to device reset failure")
             break
     if args.stdin_ctrl:
         set_term_echo(sys.stdin.fileno(), True)
@@ -567,7 +665,7 @@ def main():
         log_handler.stream.close()
         logger.removeHandler(log_handler)
         file_name = os.path.join(args.logdir, 'run-tests.log')
-        log_handler = logging.FileHandler(file_name)
+        log_handler = logging.FileHandler(file_name, encoding='utf-8')
         log_handler.setLevel(logging.DEBUG)
         log_handler.setFormatter(log_formatter)
         logger.addHandler(log_handler)
@@ -580,15 +678,15 @@ def main():
         logger.info("skipped {} test case(s)".format(len(skipped)))
         logger.info("failed tests: " + ' '.join(failed))
         if args.loglevel == logging.WARNING:
-            print "failed tests: " + ' '.join(failed)
+            print("failed tests: " + ' '.join(failed))
         sys.exit(1)
     logger.info("passed all {} test case(s)".format(len(passed)))
     if len(skipped):
         logger.info("skipped {} test case(s)".format(len(skipped)))
     if args.loglevel == logging.WARNING:
-        print "passed all {} test case(s)".format(len(passed))
+        print("passed all {} test case(s)".format(len(passed)))
         if len(skipped):
-            print "skipped {} test case(s)".format(len(skipped))
+            print("skipped {} test case(s)".format(len(skipped)))
 
 if __name__ == "__main__":
     main()

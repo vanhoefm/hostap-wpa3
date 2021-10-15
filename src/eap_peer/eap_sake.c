@@ -1,6 +1,6 @@
 /*
  * EAP peer method: EAP-SAKE (RFC 4763)
- * Copyright (c) 2006-2008, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2006-2019, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -148,7 +148,7 @@ static struct wpabuf * eap_sake_process_identity(struct eap_sm *sm,
 	struct wpabuf *resp;
 
 	if (data->state != IDENTITY) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
@@ -195,7 +195,7 @@ static struct wpabuf * eap_sake_process_challenge(struct eap_sm *sm,
 	if (data->state != IDENTITY && data->state != CHALLENGE) {
 		wpa_printf(MSG_DEBUG, "EAP-SAKE: Request/Challenge received "
 			   "in unexpected state (%d)", data->state);
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 	if (data->state == IDENTITY)
@@ -235,9 +235,13 @@ static struct wpabuf * eap_sake_process_challenge(struct eap_sm *sm,
 		data->serverid_len = attr.serverid_len;
 	}
 
-	eap_sake_derive_keys(data->root_secret_a, data->root_secret_b,
-			     data->rand_s, data->rand_p,
-			     (u8 *) &data->tek, data->msk, data->emsk);
+	if (eap_sake_derive_keys(data->root_secret_a, data->root_secret_b,
+				 data->rand_s, data->rand_p,
+				 (u8 *) &data->tek, data->msk,
+				 data->emsk) < 0) {
+		wpa_printf(MSG_INFO, "EAP-SAKE: Failed to derive keys");
+		return NULL;
+	}
 
 	wpa_printf(MSG_DEBUG, "EAP-SAKE: Sending Response/Challenge");
 
@@ -292,7 +296,7 @@ static struct wpabuf * eap_sake_process_confirm(struct eap_sm *sm,
 	u8 *rpos;
 
 	if (data->state != CONFIRM) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
@@ -316,7 +320,7 @@ static struct wpabuf * eap_sake_process_confirm(struct eap_sm *sm,
 		eap_sake_state(data, FAILURE);
 		ret->methodState = METHOD_DONE;
 		ret->decision = DECISION_FAIL;
-		ret->allowNotifications = FALSE;
+		ret->allowNotifications = false;
 		wpa_printf(MSG_DEBUG, "EAP-SAKE: Sending Response/Auth-Reject");
 		return eap_sake_build_msg(data, id, 0,
 					  EAP_SAKE_SUBTYPE_AUTH_REJECT);
@@ -326,7 +330,7 @@ static struct wpabuf * eap_sake_process_confirm(struct eap_sm *sm,
 		eap_sake_state(data, FAILURE);
 		ret->methodState = METHOD_DONE;
 		ret->decision = DECISION_FAIL;
-		ret->allowNotifications = FALSE;
+		ret->allowNotifications = false;
 		wpa_printf(MSG_DEBUG, "EAP-SAKE: Sending "
 			   "Response/Auth-Reject");
 		return eap_sake_build_msg(data, id, 0,
@@ -357,7 +361,7 @@ static struct wpabuf * eap_sake_process_confirm(struct eap_sm *sm,
 	eap_sake_state(data, SUCCESS);
 	ret->methodState = METHOD_DONE;
 	ret->decision = DECISION_UNCOND_SUCC;
-	ret->allowNotifications = FALSE;
+	ret->allowNotifications = false;
 
 	return resp;
 }
@@ -376,7 +380,7 @@ static struct wpabuf * eap_sake_process(struct eap_sm *sm, void *priv,
 
 	pos = eap_hdr_validate(EAP_VENDOR_IETF, EAP_TYPE_SAKE, reqData, &len);
 	if (pos == NULL || len < sizeof(struct eap_sake_hdr)) {
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
@@ -395,16 +399,16 @@ static struct wpabuf * eap_sake_process(struct eap_sm *sm, void *priv,
 	if (data->session_id_set && data->session_id != session_id) {
 		wpa_printf(MSG_INFO, "EAP-SAKE: Session ID mismatch (%d,%d)",
 			   session_id, data->session_id);
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 	data->session_id = session_id;
 	data->session_id_set = 1;
 
-	ret->ignore = FALSE;
+	ret->ignore = false;
 	ret->methodState = METHOD_MAY_CONT;
 	ret->decision = DECISION_FAIL;
-	ret->allowNotifications = TRUE;
+	ret->allowNotifications = true;
 
 	switch (subtype) {
 	case EAP_SAKE_SUBTYPE_IDENTITY:
@@ -422,18 +426,18 @@ static struct wpabuf * eap_sake_process(struct eap_sm *sm, void *priv,
 	default:
 		wpa_printf(MSG_DEBUG, "EAP-SAKE: Ignoring message with "
 			   "unknown subtype %d", subtype);
-		ret->ignore = TRUE;
+		ret->ignore = true;
 		return NULL;
 	}
 
 	if (ret->methodState == METHOD_DONE)
-		ret->allowNotifications = FALSE;
+		ret->allowNotifications = false;
 
 	return resp;
 }
 
 
-static Boolean eap_sake_isKeyAvailable(struct eap_sm *sm, void *priv)
+static bool eap_sake_isKeyAvailable(struct eap_sm *sm, void *priv)
 {
 	struct eap_sake_data *data = priv;
 	return data->state == SUCCESS;

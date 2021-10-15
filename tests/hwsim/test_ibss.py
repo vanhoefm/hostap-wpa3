@@ -12,7 +12,7 @@ import re
 import subprocess
 
 import hwsim_utils
-from utils import alloc_fail, wait_fail_trigger
+from utils import *
 
 def connect_ibss_cmd(dev, id, freq=2412):
     dev.dump_monitor()
@@ -95,7 +95,7 @@ def add_ibss_wpa_none_ccmp(dev, ssid):
 
 def test_ibss_rsn(dev):
     """IBSS RSN"""
-    ssid="ibss-rsn"
+    ssid = "ibss-rsn"
 
     logger.info("Start IBSS on the first STA")
     id = add_ibss_rsn(dev[0], ssid)
@@ -160,7 +160,7 @@ def test_ibss_rsn(dev):
 
 def test_ibss_rsn_group_rekey(dev):
     """IBSS RSN group rekeying"""
-    ssid="ibss-rsn"
+    ssid = "ibss-rsn"
 
     logger.info("Start IBSS on the first STA")
     id = add_ibss_rsn(dev[0], ssid, group_rekey=4, scan_freq=2412)
@@ -189,7 +189,10 @@ def test_ibss_rsn_group_rekey(dev):
 
 def test_ibss_wpa_none(dev):
     """IBSS WPA-None"""
-    ssid="ibss-wpa-none"
+    skip_without_tkip(dev[0])
+    skip_without_tkip(dev[1])
+    skip_without_tkip(dev[2])
+    ssid = "ibss-wpa-none"
 
     logger.info("Start IBSS on the first STA")
     id = add_ibss_wpa_none(dev[0], ssid)
@@ -240,15 +243,15 @@ def test_ibss_wpa_none(dev):
     # mac80211 currently..
     try:
         hwsim_utils.test_connectivity(dev[0], dev[1])
-    except Exception, e:
+    except Exception as e:
         logger.info("Ignoring known connectivity failure: " + str(e))
     try:
         hwsim_utils.test_connectivity(dev[0], dev[2])
-    except Exception, e:
+    except Exception as e:
         logger.info("Ignoring known connectivity failure: " + str(e))
     try:
         hwsim_utils.test_connectivity(dev[1], dev[2])
-    except Exception, e:
+    except Exception as e:
         logger.info("Ignoring known connectivity failure: " + str(e))
 
     key_mgmt = dev[0].get_status_field("key_mgmt")
@@ -257,7 +260,9 @@ def test_ibss_wpa_none(dev):
 
 def test_ibss_wpa_none_ccmp(dev):
     """IBSS WPA-None/CCMP"""
-    ssid="ibss-wpa-none"
+    skip_without_tkip(dev[0])
+    skip_without_tkip(dev[1])
+    ssid = "ibss-wpa-none"
 
     logger.info("Start IBSS on the first STA")
     id = add_ibss_wpa_none(dev[0], ssid)
@@ -291,12 +296,12 @@ def test_ibss_wpa_none_ccmp(dev):
     # mac80211 currently..
     try:
         hwsim_utils.test_connectivity(dev[0], dev[1])
-    except Exception, e:
+    except Exception as e:
         logger.info("Ignoring known connectivity failure: " + str(e))
 
 def test_ibss_open(dev):
     """IBSS open (no security)"""
-    ssid="ibss"
+    ssid = "ibss"
     id = add_ibss(dev[0], ssid, key_mgmt="NONE", beacon_int="150")
     connect_ibss_cmd(dev[0], id)
     bssid0 = wait_ibss_connection(dev[0])
@@ -333,8 +338,8 @@ def test_ibss_open(dev):
 
 def test_ibss_open_fixed_bssid(dev):
     """IBSS open (no security) and fixed BSSID"""
-    ssid="ibss"
-    bssid="02:11:22:33:44:55"
+    ssid = "ibss"
+    bssid = "02:11:22:33:44:55"
     try:
         dev[0].request("AP_SCAN 2")
         add_ibss(dev[0], ssid, key_mgmt="NONE", bssid=bssid, beacon_int="150")
@@ -360,7 +365,7 @@ def test_ibss_open_retry(dev):
     subprocess.check_call(['iw', 'dev', dev[0].ifname, 'ibss', 'join',
                            'ibss-test', '2412', 'HT20', 'fixed-freq',
                            '02:22:33:44:55:66'])
-    ssid="ibss"
+    ssid = "ibss"
     try:
         dev[0].request("AP_SCAN 2")
         id = add_ibss(dev[0], ssid, key_mgmt="NONE", beacon_int="150",
@@ -377,7 +382,9 @@ def test_ibss_open_retry(dev):
 
 def test_ibss_rsn_tkip(dev):
     """IBSS RSN with TKIP as the cipher"""
-    ssid="ibss-rsn-tkip"
+    skip_without_tkip(dev[0])
+    skip_without_tkip(dev[1])
+    ssid = "ibss-rsn-tkip"
 
     id = add_ibss_rsn_tkip(dev[0], ssid)
     connect_ibss_cmd(dev[0], id)
@@ -395,7 +402,10 @@ def test_ibss_rsn_tkip(dev):
 
 def test_ibss_wep(dev):
     """IBSS with WEP"""
-    ssid="ibss-wep"
+    check_wep_capa(dev[0])
+    check_wep_capa(dev[1])
+
+    ssid = "ibss-wep"
 
     id = add_ibss(dev[0], ssid, key_mgmt="NONE", wep_key0='"hello"')
     connect_ibss_cmd(dev[0], id)
@@ -431,7 +441,7 @@ def _test_ibss_5ghz(dev):
                 break
         dev[i].dump_monitor()
 
-    ssid="ibss"
+    ssid = "ibss"
     id = add_ibss(dev[0], ssid, key_mgmt="NONE", beacon_int="150", freq=5180)
     connect_ibss_cmd(dev[0], id, freq=5180)
     bssid0 = wait_ibss_connection(dev[0])
@@ -468,7 +478,7 @@ def _test_ibss_vht_80p80(dev):
                 break
         dev[i].dump_monitor()
 
-    ssid="ibss"
+    ssid = "ibss"
     id = add_ibss(dev[0], ssid, key_mgmt="NONE", freq=5180, chwidth=3)
     connect_ibss_cmd(dev[0], id, freq=5180)
     bssid0 = wait_ibss_connection(dev[0])
@@ -504,7 +514,7 @@ def _test_ibss_vht_80p80(dev):
 def test_ibss_rsn_oom(dev):
     """IBSS RSN OOM during wpa_init"""
     with alloc_fail(dev[0], 1, "wpa_init"):
-        ssid="ibss-rsn"
+        ssid = "ibss-rsn"
         id = add_ibss_rsn(dev[0], ssid, scan_freq=2412)
         connect_ibss_cmd(dev[0], id)
         bssid0 = wait_ibss_connection(dev[0])
@@ -512,7 +522,7 @@ def test_ibss_rsn_oom(dev):
     dev[0].dump_monitor()
 
     with alloc_fail(dev[0], 1, "=ibss_rsn_init"):
-        ssid="ibss-rsn"
+        ssid = "ibss-rsn"
         id = add_ibss_rsn(dev[0], ssid, scan_freq=2412)
         connect_ibss_cmd(dev[0], id)
         bssid0 = wait_ibss_connection(dev[0])
@@ -525,7 +535,7 @@ def send_eapol_rx(dev, dst):
 
 def test_ibss_rsn_eapol_trigger(dev):
     """IBSS RSN and EAPOL trigger for a new peer"""
-    ssid="ibss-rsn"
+    ssid = "ibss-rsn"
 
     id = add_ibss_rsn(dev[0], ssid, scan_freq=2412)
     connect_ibss_cmd(dev[0], id)

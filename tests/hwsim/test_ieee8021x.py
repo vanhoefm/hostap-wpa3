@@ -1,5 +1,5 @@
 # IEEE 802.1X tests
-# Copyright (c) 2013-2015, Jouni Malinen <j@w1.fi>
+# Copyright (c) 2013-2019, Jouni Malinen <j@w1.fi>
 #
 # This software may be distributed under the terms of the BSD license.
 # See README for more details.
@@ -13,13 +13,14 @@ import time
 
 import hostapd
 import hwsim_utils
-from utils import skip_with_fips
+from utils import *
 from tshark import run_tshark
 
 logger = logging.getLogger()
 
 def test_ieee8021x_wep104(dev, apdev):
     """IEEE 802.1X connection using dynamic WEP104"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"
@@ -36,6 +37,7 @@ def test_ieee8021x_wep104(dev, apdev):
 
 def test_ieee8021x_wep40(dev, apdev):
     """IEEE 802.1X connection using dynamic WEP40"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"
@@ -52,6 +54,7 @@ def test_ieee8021x_wep40(dev, apdev):
 
 def test_ieee8021x_wep_index_workaround(dev, apdev):
     """IEEE 802.1X and EAPOL-Key index workaround"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"
@@ -100,6 +103,7 @@ def test_ieee8021x_static_wep104(dev, apdev):
     run_static_wep(dev, apdev, '"hello-there-/"')
 
 def run_static_wep(dev, apdev, key):
+    check_wep_capa(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"
     params["ieee8021x"] = "1"
@@ -134,14 +138,14 @@ def test_ieee8021x_proto(dev, apdev):
 
     start = dev[0].get_mib()
 
-    tests = [ "11",
-              "11223344",
-              "020000050a93000501",
-              "020300050a93000501",
-              "0203002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-              "0203002c0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-              "0203002c0100050000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-              "02aa00050a93000501" ]
+    tests = ["11",
+             "11223344",
+             "020000050a93000501",
+             "020300050a93000501",
+             "0203002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+             "0203002c0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+             "0203002c0100050000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+             "02aa00050a93000501"]
     for frame in tests:
         res = dev[0].request("EAPOL_RX " + bssid + " " + frame)
         if "OK" not in res:
@@ -153,8 +157,8 @@ def test_ieee8021x_proto(dev, apdev):
     logger.info("MIB before test frames: " + str(start))
     logger.info("MIB after test frames: " + str(stop))
 
-    vals = [ 'dot1xSuppInvalidEapolFramesRx',
-             'dot1xSuppEapLengthErrorFramesRx' ]
+    vals = ['dot1xSuppInvalidEapolFramesRx',
+            'dot1xSuppEapLengthErrorFramesRx']
     for val in vals:
         if int(stop[val]) <= int(start[val]):
             raise Exception(val + " did not increase")
@@ -230,8 +234,8 @@ def test_ieee8021x_held(dev, apdev):
             time.sleep(0.25)
         if held:
             raise Exception("PAE state HELD not left")
-        ev = dev[0].wait_event([ "CTRL-EVENT-CONNECTED",
-                                 "CTRL-EVENT-DISCONNECTED" ], timeout=10)
+        ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED",
+                                "CTRL-EVENT-DISCONNECTED"], timeout=10)
         if ev is None:
             raise Exception("Connection timed out")
         if "CTRL-EVENT-DISCONNECTED" in ev:
@@ -241,17 +245,35 @@ def test_ieee8021x_held(dev, apdev):
         dev[0].request("SET EAPOL::maxStart 3")
         dev[0].request("SET EAPOL::heldPeriod 60")
 
+def test_ieee8021x_force_unauth(dev, apdev):
+    """IEEE 802.1X and FORCE_UNAUTH state"""
+    params = hostapd.radius_params()
+    params["ssid"] = "ieee8021x-open"
+    params["ieee8021x"] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = apdev[0]['bssid']
+
+    dev[0].connect("ieee8021x-open", key_mgmt="IEEE8021X", eapol_flags="0",
+                   eap="PSK", identity="psk.user@example.com",
+                   password_hex="0123456789abcdef0123456789abcdef",
+                   scan_freq="2412")
+    dev[0].request("SET EAPOL::portControl ForceUnauthorized")
+    pae = dev[0].get_status_field('Supplicant PAE state')
+    dev[0].wait_disconnected()
+    dev[0].request("SET EAPOL::portControl Auto")
+
 def send_eapol_key(dev, bssid, signkey, frame_start, frame_end):
     zero_sign = "00000000000000000000000000000000"
     frame = frame_start + zero_sign + frame_end
-    hmac_obj = hmac.new(binascii.unhexlify(signkey))
+    hmac_obj = hmac.new(binascii.unhexlify(signkey), digestmod='MD5')
     hmac_obj.update(binascii.unhexlify(frame))
     sign = hmac_obj.digest()
-    frame = frame_start + binascii.hexlify(sign) + frame_end
+    frame = frame_start + binascii.hexlify(sign).decode() + frame_end
     dev.request("EAPOL_RX " + bssid + " " + frame)
 
 def test_ieee8021x_eapol_key(dev, apdev):
     """IEEE 802.1X connection and EAPOL-Key protocol tests"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"
@@ -317,6 +339,7 @@ def test_ieee8021x_reauth(dev, apdev):
 
 def test_ieee8021x_reauth_wep(dev, apdev, params):
     """IEEE 802.1X and EAPOL_REAUTH request with WEP"""
+    check_wep_capa(dev[0])
     logdir = params['logdir']
 
     params = hostapd.radius_params()
@@ -381,34 +404,34 @@ def test_ieee8021x_set_conf(dev, apdev):
                    scan_freq="2412")
 
     addr0 = dev[0].own_addr()
-    tests = [ "EAPOL_SET 1",
-              "EAPOL_SET %sfoo bar" % addr0,
-              "EAPOL_SET %s foo" % addr0,
-              "EAPOL_SET %s foo bar" % addr0,
-              "EAPOL_SET %s AdminControlledDirections bar" % addr0,
-              "EAPOL_SET %s AdminControlledPortControl bar" % addr0,
-              "EAPOL_SET %s reAuthEnabled bar" % addr0,
-              "EAPOL_SET %s KeyTransmissionEnabled bar" % addr0,
-              "EAPOL_SET 11:22:33:44:55:66 AdminControlledDirections Both" ]
+    tests = ["EAPOL_SET 1",
+             "EAPOL_SET %sfoo bar" % addr0,
+             "EAPOL_SET %s foo" % addr0,
+             "EAPOL_SET %s foo bar" % addr0,
+             "EAPOL_SET %s AdminControlledDirections bar" % addr0,
+             "EAPOL_SET %s AdminControlledPortControl bar" % addr0,
+             "EAPOL_SET %s reAuthEnabled bar" % addr0,
+             "EAPOL_SET %s KeyTransmissionEnabled bar" % addr0,
+             "EAPOL_SET 11:22:33:44:55:66 AdminControlledDirections Both"]
     for t in tests:
         if "FAIL" not in hapd.request(t):
             raise Exception("Invalid EAPOL_SET command accepted: " + t)
 
-    tests = [ ("AdminControlledDirections", "adminControlledDirections", "In"),
-              ("AdminControlledDirections", "adminControlledDirections",
-               "Both"),
-              ("quietPeriod", "quietPeriod", "13"),
-              ("serverTimeout", "serverTimeout", "7"),
-              ("reAuthPeriod", "reAuthPeriod", "1234"),
-              ("reAuthEnabled", "reAuthEnabled", "FALSE"),
-              ("reAuthEnabled", "reAuthEnabled", "TRUE"),
-              ("KeyTransmissionEnabled", "keyTxEnabled", "TRUE"),
-              ("KeyTransmissionEnabled", "keyTxEnabled", "FALSE"),
-              ("AdminControlledPortControl", "portControl", "ForceAuthorized"),
-              ("AdminControlledPortControl", "portControl",
-               "ForceUnauthorized"),
-              ("AdminControlledPortControl", "portControl", "Auto") ]
-    for param,mibparam,val in tests:
+    tests = [("AdminControlledDirections", "adminControlledDirections", "In"),
+             ("AdminControlledDirections", "adminControlledDirections",
+              "Both"),
+             ("quietPeriod", "quietPeriod", "13"),
+             ("serverTimeout", "serverTimeout", "7"),
+             ("reAuthPeriod", "reAuthPeriod", "1234"),
+             ("reAuthEnabled", "reAuthEnabled", "FALSE"),
+             ("reAuthEnabled", "reAuthEnabled", "TRUE"),
+             ("KeyTransmissionEnabled", "keyTxEnabled", "TRUE"),
+             ("KeyTransmissionEnabled", "keyTxEnabled", "FALSE"),
+             ("AdminControlledPortControl", "portControl", "ForceAuthorized"),
+             ("AdminControlledPortControl", "portControl",
+              "ForceUnauthorized"),
+             ("AdminControlledPortControl", "portControl", "Auto")]
+    for param, mibparam, val in tests:
         if "OK" not in hapd.request("EAPOL_SET %s %s %s" % (addr0, param, val)):
             raise Exception("Failed to set %s %s" % (param, val))
         mib = hapd.get_sta(addr0, info="eapol")
@@ -492,6 +515,7 @@ def test_ieee8021x_open_leap(dev, apdev):
 
 def test_ieee8021x_and_wpa_enabled(dev, apdev):
     """IEEE 802.1X connection using dynamic WEP104 when WPA enabled"""
+    check_wep_capa(dev[0])
     skip_with_fips(dev[0])
     params = hostapd.radius_params()
     params["ssid"] = "ieee8021x-wep"

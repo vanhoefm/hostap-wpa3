@@ -21,14 +21,17 @@
 #endif /* CONFIG_OPENSSL_CMAC */
 #ifdef CONFIG_ECC
 #include <openssl/ec.h>
+#include <openssl/x509.h>
 #endif /* CONFIG_ECC */
 
 #include "common.h"
+#include "utils/const_time.h"
 #include "wpabuf.h"
 #include "dh_group5.h"
 #include "sha1.h"
 #include "sha256.h"
 #include "sha384.h"
+#include "sha512.h"
 #include "md5.h"
 #include "aes_wrap.h"
 #include "crypto.h"
@@ -77,6 +80,16 @@ static void EVP_MD_CTX_free(EVP_MD_CTX *ctx)
 	bin_clear_free(ctx, sizeof(*ctx));
 }
 
+
+#ifdef CONFIG_ECC
+static EC_KEY * EVP_PKEY_get0_EC_KEY(EVP_PKEY *pkey)
+{
+	if (pkey->type != EVP_PKEY_EC)
+		return NULL;
+	return pkey->pkey.ec;
+}
+#endif /* CONFIG_ECC */
+
 #endif /* OpenSSL version < 1.1.0 */
 
 static BIGNUM * get_group5_prime(void)
@@ -109,6 +122,31 @@ static BIGNUM * get_group5_prime(void)
         return BN_bin2bn(RFC3526_PRIME_1536, sizeof(RFC3526_PRIME_1536), NULL);
 #endif
 }
+
+
+static BIGNUM * get_group5_order(void)
+{
+	static const unsigned char RFC3526_ORDER_1536[] = {
+		0x7F,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xE4,0x87,0xED,0x51,
+		0x10,0xB4,0x61,0x1A,0x62,0x63,0x31,0x45,0xC0,0x6E,0x0E,0x68,
+		0x94,0x81,0x27,0x04,0x45,0x33,0xE6,0x3A,0x01,0x05,0xDF,0x53,
+		0x1D,0x89,0xCD,0x91,0x28,0xA5,0x04,0x3C,0xC7,0x1A,0x02,0x6E,
+		0xF7,0xCA,0x8C,0xD9,0xE6,0x9D,0x21,0x8D,0x98,0x15,0x85,0x36,
+		0xF9,0x2F,0x8A,0x1B,0xA7,0xF0,0x9A,0xB6,0xB6,0xA8,0xE1,0x22,
+		0xF2,0x42,0xDA,0xBB,0x31,0x2F,0x3F,0x63,0x7A,0x26,0x21,0x74,
+		0xD3,0x1B,0xF6,0xB5,0x85,0xFF,0xAE,0x5B,0x7A,0x03,0x5B,0xF6,
+		0xF7,0x1C,0x35,0xFD,0xAD,0x44,0xCF,0xD2,0xD7,0x4F,0x92,0x08,
+		0xBE,0x25,0x8F,0xF3,0x24,0x94,0x33,0x28,0xF6,0x72,0x2D,0x9E,
+		0xE1,0x00,0x3E,0x5C,0x50,0xB1,0xDF,0x82,0xCC,0x6D,0x24,0x1B,
+		0x0E,0x2A,0xE9,0xCD,0x34,0x8B,0x1F,0xD4,0x7E,0x92,0x67,0xAF,
+		0xC1,0xB2,0xAE,0x91,0xEE,0x51,0xD6,0xCB,0x0E,0x31,0x79,0xAB,
+		0x10,0x42,0xA9,0x5D,0xCF,0x6A,0x94,0x83,0xB8,0x4B,0x4B,0x36,
+		0xB3,0x86,0x1A,0xA7,0x25,0x5E,0x4C,0x02,0x78,0xBA,0x36,0x04,
+		0x65,0x11,0xB9,0x93,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+	};
+	return BN_bin2bn(RFC3526_ORDER_1536, sizeof(RFC3526_ORDER_1536), NULL);
+}
+
 
 #ifdef OPENSSL_NO_SHA256
 #define NO_SHA256_WRAPPER
@@ -168,8 +206,8 @@ int md4_vector(size_t num_elem, const u8 *addr[], const size_t *len, u8 *mac)
 int des_encrypt(const u8 *clear, const u8 *key, u8 *cypher)
 {
 	u8 pkey[8], next, tmp;
-	int i;
-	DES_key_schedule ks;
+	int i, plen, ret = -1;
+	EVP_CIPHER_CTX *ctx;
 
 	/* Add parity bits to the key */
 	next = 0;
@@ -180,10 +218,19 @@ int des_encrypt(const u8 *clear, const u8 *key, u8 *cypher)
 	}
 	pkey[i] = next | 1;
 
-	DES_set_key((DES_cblock *) &pkey, &ks);
-	DES_ecb_encrypt((DES_cblock *) clear, (DES_cblock *) cypher, &ks,
-			DES_ENCRYPT);
-	return 0;
+	ctx = EVP_CIPHER_CTX_new();
+	if (ctx &&
+	    EVP_EncryptInit_ex(ctx, EVP_des_ecb(), NULL, pkey, NULL) == 1 &&
+	    EVP_CIPHER_CTX_set_padding(ctx, 0) == 1 &&
+	    EVP_EncryptUpdate(ctx, cypher, &plen, clear, 8) == 1 &&
+	    EVP_EncryptFinal_ex(ctx, &cypher[plen], &plen) == 1)
+		ret = 0;
+	else
+		wpa_printf(MSG_ERROR, "OpenSSL: DES encrypt failed");
+
+	if (ctx)
+		EVP_CIPHER_CTX_free(ctx);
+	return ret;
 }
 
 
@@ -201,8 +248,8 @@ int rc4_skip(const u8 *key, size_t keylen, size_t skip,
 
 	ctx = EVP_CIPHER_CTX_new();
 	if (!ctx ||
-	    !EVP_CIPHER_CTX_set_padding(ctx, 0) ||
 	    !EVP_CipherInit_ex(ctx, EVP_rc4(), NULL, NULL, NULL, 1) ||
+	    !EVP_CIPHER_CTX_set_padding(ctx, 0) ||
 	    !EVP_CIPHER_CTX_set_key_length(ctx, keylen) ||
 	    !EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, 1))
 		goto out;
@@ -517,12 +564,45 @@ int crypto_dh_init(u8 generator, const u8 *prime, size_t prime_len, u8 *privkey,
 
 
 int crypto_dh_derive_secret(u8 generator, const u8 *prime, size_t prime_len,
+			    const u8 *order, size_t order_len,
 			    const u8 *privkey, size_t privkey_len,
 			    const u8 *pubkey, size_t pubkey_len,
 			    u8 *secret, size_t *len)
 {
-	return crypto_mod_exp(pubkey, pubkey_len, privkey, privkey_len,
-			      prime, prime_len, secret, len);
+	BIGNUM *pub, *p;
+	int res = -1;
+
+	pub = BN_bin2bn(pubkey, pubkey_len, NULL);
+	p = BN_bin2bn(prime, prime_len, NULL);
+	if (!pub || !p || BN_is_zero(pub) || BN_is_one(pub) ||
+	    BN_cmp(pub, p) >= 0)
+		goto fail;
+
+	if (order) {
+		BN_CTX *ctx;
+		BIGNUM *q, *tmp;
+		int failed;
+
+		/* verify: pubkey^q == 1 mod p */
+		q = BN_bin2bn(order, order_len, NULL);
+		ctx = BN_CTX_new();
+		tmp = BN_new();
+		failed = !q || !ctx || !tmp ||
+			!BN_mod_exp(tmp, pub, q, p, ctx) ||
+			!BN_is_one(tmp);
+		BN_clear_free(q);
+		BN_clear_free(tmp);
+		BN_CTX_free(ctx);
+		if (failed)
+			goto fail;
+	}
+
+	res = crypto_mod_exp(pubkey, pubkey_len, privkey, privkey_len,
+			     prime, prime_len, secret, len);
+fail:
+	BN_clear_free(pub);
+	BN_clear_free(p);
+	return res;
 }
 
 
@@ -548,7 +628,8 @@ int crypto_mod_exp(const u8 *base, size_t base_len,
 	    bn_result == NULL)
 		goto error;
 
-	if (BN_mod_exp(bn_result, bn_base, bn_exp, bn_modulus, ctx) != 1)
+	if (BN_mod_exp_mont_consttime(bn_result, bn_base, bn_exp, bn_modulus,
+				      ctx, NULL) != 1)
 		goto error;
 
 	*result_len = BN_bn2bin(bn_result, result);
@@ -628,8 +709,8 @@ struct crypto_cipher * crypto_cipher_init(enum crypto_cipher_alg alg,
 	}
 
 	if (!(ctx->enc = EVP_CIPHER_CTX_new()) ||
-	    !EVP_CIPHER_CTX_set_padding(ctx->enc, 0) ||
 	    !EVP_EncryptInit_ex(ctx->enc, cipher, NULL, NULL, NULL) ||
+	    !EVP_CIPHER_CTX_set_padding(ctx->enc, 0) ||
 	    !EVP_CIPHER_CTX_set_key_length(ctx->enc, key_len) ||
 	    !EVP_EncryptInit_ex(ctx->enc, NULL, NULL, key, iv)) {
 		if (ctx->enc)
@@ -639,8 +720,8 @@ struct crypto_cipher * crypto_cipher_init(enum crypto_cipher_alg alg,
 	}
 
 	if (!(ctx->dec = EVP_CIPHER_CTX_new()) ||
-	    !EVP_CIPHER_CTX_set_padding(ctx->dec, 0) ||
 	    !EVP_DecryptInit_ex(ctx->dec, cipher, NULL, NULL, NULL) ||
+	    !EVP_CIPHER_CTX_set_padding(ctx->dec, 0) ||
 	    !EVP_CIPHER_CTX_set_key_length(ctx->dec, key_len) ||
 	    !EVP_DecryptInit_ex(ctx->dec, NULL, NULL, key, iv)) {
 		EVP_CIPHER_CTX_free(ctx->enc);
@@ -708,6 +789,10 @@ void * dh5_init(struct wpabuf **priv, struct wpabuf **publ)
 	if (dh->p == NULL)
 		goto err;
 
+	dh->q = get_group5_order();
+	if (!dh->q)
+		goto err;
+
 	if (DH_generate_key(dh) != 1)
 		goto err;
 
@@ -736,7 +821,7 @@ err:
 	DH *dh;
 	struct wpabuf *pubkey = NULL, *privkey = NULL;
 	size_t publen, privlen;
-	BIGNUM *p = NULL, *g;
+	BIGNUM *p, *g, *q;
 	const BIGNUM *priv_key = NULL, *pub_key = NULL;
 
 	*priv = NULL;
@@ -749,10 +834,12 @@ err:
 
 	g = BN_new();
 	p = get_group5_prime();
-	if (!g || BN_set_word(g, 2) != 1 || !p ||
-	    DH_set0_pqg(dh, p, NULL, g) != 1)
+	q = get_group5_order();
+	if (!g || BN_set_word(g, 2) != 1 || !p || !q ||
+	    DH_set0_pqg(dh, p, q, g) != 1)
 		goto err;
 	p = NULL;
+	q = NULL;
 	g = NULL;
 
 	if (DH_generate_key(dh) != 1)
@@ -777,6 +864,7 @@ err:
 
 err:
 	BN_free(p);
+	BN_free(q);
 	BN_free(g);
 	wpabuf_clear_free(pubkey);
 	wpabuf_clear_free(privkey);
@@ -985,6 +1073,9 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 	res = HMAC_Final(ctx->ctx, mac, &mdlen);
 	HMAC_CTX_free(ctx->ctx);
 	bin_clear_free(ctx, sizeof(*ctx));
+
+	if (TEST_FAIL())
+		return -1;
 
 	if (res == 1) {
 		*len = mdlen;
@@ -1212,6 +1303,24 @@ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len)
 }
 
 
+struct crypto_bignum * crypto_bignum_init_uint(unsigned int val)
+{
+	BIGNUM *bn;
+
+	if (TEST_FAIL())
+		return NULL;
+
+	bn = BN_new();
+	if (!bn)
+		return NULL;
+	if (BN_set_word(bn, val) != 1) {
+		BN_free(bn);
+		return NULL;
+	}
+	return (struct crypto_bignum *) bn;
+}
+
+
 void crypto_bignum_deinit(struct crypto_bignum *n, int clear)
 {
 	if (clear)
@@ -1232,6 +1341,18 @@ int crypto_bignum_to_bin(const struct crypto_bignum *a,
 	if (padlen > buflen)
 		return -1;
 
+	if (padlen) {
+#ifdef OPENSSL_IS_BORINGSSL
+		if (BN_bn2bin_padded(buf, padlen, (const BIGNUM *) a) == 0)
+			return -1;
+		return padlen;
+#else /* OPENSSL_IS_BORINGSSL */
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+		return BN_bn2binpad((const BIGNUM *) a, buf, padlen);
+#endif
+#endif
+	}
+
 	num_bytes = BN_num_bytes((const BIGNUM *) a);
 	if ((size_t) num_bytes > buflen)
 		return -1;
@@ -1249,6 +1370,8 @@ int crypto_bignum_to_bin(const struct crypto_bignum *a,
 
 int crypto_bignum_rand(struct crypto_bignum *r, const struct crypto_bignum *m)
 {
+	if (TEST_FAIL())
+		return -1;
 	return BN_rand_range((BIGNUM *) r, (const BIGNUM *) m) == 1 ? 0 : -1;
 }
 
@@ -1294,8 +1417,9 @@ int crypto_bignum_exptmod(const struct crypto_bignum *a,
 	bnctx = BN_CTX_new();
 	if (bnctx == NULL)
 		return -1;
-	res = BN_mod_exp((BIGNUM *) d, (const BIGNUM *) a, (const BIGNUM *) b,
-			 (const BIGNUM *) c, bnctx);
+	res = BN_mod_exp_mont_consttime((BIGNUM *) d, (const BIGNUM *) a,
+					(const BIGNUM *) b, (const BIGNUM *) c,
+					bnctx, NULL);
 	BN_CTX_free(bnctx);
 
 	return res ? 0 : -1;
@@ -1314,6 +1438,11 @@ int crypto_bignum_inverse(const struct crypto_bignum *a,
 	bnctx = BN_CTX_new();
 	if (bnctx == NULL)
 		return -1;
+#ifdef OPENSSL_IS_BORINGSSL
+	/* TODO: use BN_mod_inverse_blinded() ? */
+#else /* OPENSSL_IS_BORINGSSL */
+	BN_set_flags((BIGNUM *) a, BN_FLG_CONSTTIME);
+#endif /* OPENSSL_IS_BORINGSSL */
 	res = BN_mod_inverse((BIGNUM *) c, (const BIGNUM *) a,
 			     (const BIGNUM *) b, bnctx);
 	BN_CTX_free(bnctx);
@@ -1347,8 +1476,33 @@ int crypto_bignum_div(const struct crypto_bignum *a,
 	bnctx = BN_CTX_new();
 	if (bnctx == NULL)
 		return -1;
+#ifndef OPENSSL_IS_BORINGSSL
+	BN_set_flags((BIGNUM *) a, BN_FLG_CONSTTIME);
+#endif /* OPENSSL_IS_BORINGSSL */
 	res = BN_div((BIGNUM *) c, NULL, (const BIGNUM *) a,
 		     (const BIGNUM *) b, bnctx);
+	BN_CTX_free(bnctx);
+
+	return res ? 0 : -1;
+}
+
+
+int crypto_bignum_addmod(const struct crypto_bignum *a,
+			 const struct crypto_bignum *b,
+			 const struct crypto_bignum *c,
+			 struct crypto_bignum *d)
+{
+	int res;
+	BN_CTX *bnctx;
+
+	if (TEST_FAIL())
+		return -1;
+
+	bnctx = BN_CTX_new();
+	if (!bnctx)
+		return -1;
+	res = BN_mod_add((BIGNUM *) d, (const BIGNUM *) a, (const BIGNUM *) b,
+			 (const BIGNUM *) c, bnctx);
 	BN_CTX_free(bnctx);
 
 	return res ? 0 : -1;
@@ -1378,6 +1532,27 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
 }
 
 
+int crypto_bignum_sqrmod(const struct crypto_bignum *a,
+			 const struct crypto_bignum *b,
+			 struct crypto_bignum *c)
+{
+	int res;
+	BN_CTX *bnctx;
+
+	if (TEST_FAIL())
+		return -1;
+
+	bnctx = BN_CTX_new();
+	if (!bnctx)
+		return -1;
+	res = BN_mod_sqr((BIGNUM *) c, (const BIGNUM *) a, (const BIGNUM *) b,
+			 bnctx);
+	BN_CTX_free(bnctx);
+
+	return res ? 0 : -1;
+}
+
+
 int crypto_bignum_rshift(const struct crypto_bignum *a, int n,
 			 struct crypto_bignum *r)
 {
@@ -1391,12 +1566,6 @@ int crypto_bignum_cmp(const struct crypto_bignum *a,
 		      const struct crypto_bignum *b)
 {
 	return BN_cmp((const BIGNUM *) a, (const BIGNUM *) b);
-}
-
-
-int crypto_bignum_bits(const struct crypto_bignum *a)
-{
-	return BN_num_bits((const BIGNUM *) a);
 }
 
 
@@ -1424,6 +1593,7 @@ int crypto_bignum_legendre(const struct crypto_bignum *a,
 	BN_CTX *bnctx;
 	BIGNUM *exp = NULL, *tmp = NULL;
 	int res = -2;
+	unsigned int mask;
 
 	if (TEST_FAIL())
 		return -2;
@@ -1438,16 +1608,17 @@ int crypto_bignum_legendre(const struct crypto_bignum *a,
 	    /* exp = (p-1) / 2 */
 	    !BN_sub(exp, (const BIGNUM *) p, BN_value_one()) ||
 	    !BN_rshift1(exp, exp) ||
-	    !BN_mod_exp(tmp, (const BIGNUM *) a, exp, (const BIGNUM *) p,
-			bnctx))
+	    !BN_mod_exp_mont_consttime(tmp, (const BIGNUM *) a, exp,
+				       (const BIGNUM *) p, bnctx, NULL))
 		goto fail;
 
-	if (BN_is_word(tmp, 1))
-		res = 1;
-	else if (BN_is_zero(tmp))
-		res = 0;
-	else
-		res = -1;
+	/* Return 1 if tmp == 1, 0 if tmp == 0, or -1 otherwise. Need to use
+	 * constant time selection to avoid branches here. */
+	res = -1;
+	mask = const_time_eq(BN_is_word(tmp, 1), 1);
+	res = const_time_select_int(mask, 1, res);
+	mask = const_time_eq(BN_is_zero(tmp), 1);
+	res = const_time_select_int(mask, 0, res);
 
 fail:
 	BN_clear_free(tmp);
@@ -1552,13 +1723,6 @@ void crypto_ec_deinit(struct crypto_ec *e)
 }
 
 
-int crypto_ec_cofactor(struct crypto_ec *e, struct crypto_bignum *cofactor)
-{
-	return EC_GROUP_get_cofactor(e->group, (BIGNUM *) cofactor,
-				     e->bnctx) == 0 ? -1 : 0;
-}
-
-
 struct crypto_ec_point * crypto_ec_point_init(struct crypto_ec *e)
 {
 	if (TEST_FAIL())
@@ -1596,6 +1760,18 @@ const struct crypto_bignum * crypto_ec_get_prime(struct crypto_ec *e)
 const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e)
 {
 	return (const struct crypto_bignum *) e->order;
+}
+
+
+const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e)
+{
+	return (const struct crypto_bignum *) e->a;
+}
+
+
+const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
+{
+	return (const struct crypto_bignum *) e->b;
 }
 
 
@@ -1793,7 +1969,7 @@ struct crypto_ecdh * crypto_ecdh_init(int group)
 {
 	struct crypto_ecdh *ecdh;
 	EVP_PKEY *params = NULL;
-	EC_KEY *ec_params;
+	EC_KEY *ec_params = NULL;
 	EVP_PKEY_CTX *kctx = NULL;
 
 	ecdh = os_zalloc(sizeof(*ecdh));
@@ -1836,6 +2012,7 @@ struct crypto_ecdh * crypto_ecdh_init(int group)
 	}
 
 done:
+	EC_KEY_free(ec_params);
 	EVP_PKEY_free(params);
 	EVP_PKEY_CTX_free(kctx);
 
@@ -1975,13 +2152,17 @@ struct wpabuf * crypto_ecdh_set_peerkey(struct crypto_ecdh *ecdh, int inc_y,
 	secret = wpabuf_alloc(secret_len);
 	if (!secret)
 		goto fail;
-	if (EVP_PKEY_derive(ctx, wpabuf_put(secret, secret_len),
-			    &secret_len) != 1) {
+	if (EVP_PKEY_derive(ctx, wpabuf_put(secret, 0), &secret_len) != 1) {
 		wpa_printf(MSG_ERROR,
 			   "OpenSSL: EVP_PKEY_derive(2) failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
 		goto fail;
 	}
+	if (secret->size != secret_len)
+		wpa_printf(MSG_DEBUG,
+			   "OpenSSL: EVP_PKEY_derive(2) changed secret_len %d -> %d",
+			   (int) secret->size, (int) secret_len);
+	wpabuf_put(secret, secret_len);
 
 done:
 	BN_free(x);
@@ -2005,6 +2186,172 @@ void crypto_ecdh_deinit(struct crypto_ecdh *ecdh)
 		EVP_PKEY_free(ecdh->pkey);
 		os_free(ecdh);
 	}
+}
+
+
+size_t crypto_ecdh_prime_len(struct crypto_ecdh *ecdh)
+{
+	return crypto_ec_prime_len(ecdh->ec);
+}
+
+
+struct crypto_ec_key {
+	EVP_PKEY *pkey;
+	EC_KEY *eckey;
+};
+
+
+struct crypto_ec_key * crypto_ec_key_parse_priv(const u8 *der, size_t der_len)
+{
+	struct crypto_ec_key *key;
+
+	key = os_zalloc(sizeof(*key));
+	if (!key)
+		return NULL;
+
+	key->eckey = d2i_ECPrivateKey(NULL, &der, der_len);
+	if (!key->eckey) {
+		wpa_printf(MSG_INFO, "OpenSSL: d2i_ECPrivateKey() failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+	EC_KEY_set_conv_form(key->eckey, POINT_CONVERSION_COMPRESSED);
+
+	key->pkey = EVP_PKEY_new();
+	if (!key->pkey || EVP_PKEY_assign_EC_KEY(key->pkey, key->eckey) != 1) {
+		EC_KEY_free(key->eckey);
+		key->eckey = NULL;
+		goto fail;
+	}
+
+	return key;
+fail:
+	crypto_ec_key_deinit(key);
+	return NULL;
+}
+
+
+struct crypto_ec_key * crypto_ec_key_parse_pub(const u8 *der, size_t der_len)
+{
+	struct crypto_ec_key *key;
+
+	key = os_zalloc(sizeof(*key));
+	if (!key)
+		return NULL;
+
+	key->pkey = d2i_PUBKEY(NULL, &der, der_len);
+	if (!key->pkey) {
+		wpa_printf(MSG_INFO, "OpenSSL: d2i_PUBKEY() failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+
+	key->eckey = EVP_PKEY_get0_EC_KEY(key->pkey);
+	if (!key->eckey)
+		goto fail;
+	return key;
+fail:
+	crypto_ec_key_deinit(key);
+	return NULL;
+}
+
+
+void crypto_ec_key_deinit(struct crypto_ec_key *key)
+{
+	if (key) {
+		EVP_PKEY_free(key->pkey);
+		os_free(key);
+	}
+}
+
+
+struct wpabuf * crypto_ec_key_get_subject_public_key(struct crypto_ec_key *key)
+{
+	unsigned char *der = NULL;
+	int der_len;
+	struct wpabuf *buf;
+
+	der_len = i2d_PUBKEY(key->pkey, &der);
+	if (der_len <= 0) {
+		wpa_printf(MSG_INFO, "OpenSSL: i2d_PUBKEY() failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		return NULL;
+	}
+
+	buf = wpabuf_alloc_copy(der, der_len);
+	OPENSSL_free(der);
+	return buf;
+}
+
+
+struct wpabuf * crypto_ec_key_sign(struct crypto_ec_key *key, const u8 *data,
+				   size_t len)
+{
+	EVP_PKEY_CTX *pkctx;
+	struct wpabuf *sig_der;
+	size_t sig_len;
+
+	sig_len = EVP_PKEY_size(key->pkey);
+	sig_der = wpabuf_alloc(sig_len);
+	if (!sig_der)
+		return NULL;
+
+	pkctx = EVP_PKEY_CTX_new(key->pkey, NULL);
+	if (!pkctx ||
+	    EVP_PKEY_sign_init(pkctx) <= 0 ||
+	    EVP_PKEY_sign(pkctx, wpabuf_put(sig_der, 0), &sig_len,
+			  data, len) <= 0) {
+		wpabuf_free(sig_der);
+		sig_der = NULL;
+	} else {
+		wpabuf_put(sig_der, sig_len);
+	}
+
+	EVP_PKEY_CTX_free(pkctx);
+	return sig_der;
+}
+
+
+int crypto_ec_key_verify_signature(struct crypto_ec_key *key, const u8 *data,
+				   size_t len, const u8 *sig, size_t sig_len)
+{
+	EVP_PKEY_CTX *pkctx;
+	int ret;
+
+	pkctx = EVP_PKEY_CTX_new(key->pkey, NULL);
+	if (!pkctx || EVP_PKEY_verify_init(pkctx) <= 0) {
+		EVP_PKEY_CTX_free(pkctx);
+		return -1;
+	}
+
+	ret = EVP_PKEY_verify(pkctx, sig, sig_len, data, len);
+	EVP_PKEY_CTX_free(pkctx);
+	if (ret == 1)
+		return 1; /* signature ok */
+	if (ret == 0)
+		return 0; /* incorrect signature */
+	return -1;
+}
+
+
+int crypto_ec_key_group(struct crypto_ec_key *key)
+{
+	const EC_GROUP *group;
+	int nid;
+
+	group = EC_KEY_get0_group(key->eckey);
+	if (!group)
+		return -1;
+	nid = EC_GROUP_get_curve_name(group);
+	switch (nid) {
+	case NID_X9_62_prime256v1:
+		return 19;
+	case NID_secp384r1:
+		return 20;
+	case NID_secp521r1:
+		return 21;
+	}
+	return -1;
 }
 
 #endif /* CONFIG_ECC */

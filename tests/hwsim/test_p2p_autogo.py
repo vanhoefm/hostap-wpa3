@@ -10,6 +10,7 @@ import subprocess
 import logging
 logger = logging.getLogger()
 
+import hostapd
 import hwsim_utils
 import utils
 from utils import HwsimSkip
@@ -231,6 +232,28 @@ def test_autogo_pbc(dev):
     dev[1].p2p_connect_group(dev[0].p2p_dev_addr(), "pbc", timeout=15,
                              social=True)
 
+def test_autogo_pbc_session_overlap(dev, apdev):
+    """P2P autonomous GO and PBC session overlap"""
+    params = {"ssid": "wps", "eap_server": "1", "wps_state": "1"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    hapd.request("WPS_PBC")
+    bssid = hapd.own_addr()
+    time.sleep(0.1)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[1].scan_for_bss(bssid, freq=2412)
+
+    dev[1].global_request("SET p2p_no_group_iface 0")
+    autogo(dev[0], freq=2412)
+    if "OK" not in dev[0].group_request("WPS_PBC p2p_dev_addr=" + dev[1].p2p_dev_addr()):
+        raise Exception("WPS_PBC failed")
+    dev[1].p2p_connect_group(dev[0].p2p_dev_addr(), "pbc", timeout=15,
+                             social=True)
+    hapd.disable()
+    remove_group(dev[0], dev[1])
+    dev[0].flush_scan_cache()
+    dev[1].flush_scan_cache()
+
 def test_autogo_tdls(dev):
     """P2P autonomous GO and two clients using TDLS"""
     go = dev[0]
@@ -355,7 +378,7 @@ def test_autogo_chan_switch_group_iface(dev):
 @remote_compatible
 def test_autogo_extra_cred(dev):
     """P2P autonomous GO sending two WPS credentials"""
-    if "FAIL" in dev[0].request("SET wps_testing_dummy_cred 1"):
+    if "FAIL" in dev[0].request("SET wps_testing_stub_cred 1"):
         raise Exception("Failed to enable test mode")
     autogo(dev[0], freq=2412)
     connect_cli(dev[0], dev[1], social=True, freq=2412)
@@ -746,7 +769,7 @@ def _test_autogo_many_clients(dev):
         raise Exception("Could not find peer (3)")
     dev[1].p2p_stop_find()
 
-    for i in [ name0, name2, name3 ]:
+    for i in [name0, name2, name3]:
         if i not in ev1 and i not in ev2 and i not in ev3:
             raise Exception('name "%s" not found' % i)
 
@@ -899,3 +922,15 @@ def run_autogo_interworking(dev):
     dev[0].remove_group()
     if '6b03110203' not in bss['ie']:
         raise Exception("Interworking element not seen")
+
+def test_autogo_remove_iface(dev):
+    """P2P autonomous GO and interface being removed"""
+    wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+    wpas.interface_add("wlan5")
+    wpas.global_request("SET p2p_no_group_iface 1")
+    wpas.set("p2p_group_idle", "1")
+    autogo(wpas)
+    wpas.global_request("P2P_SET disallow_freq 5000")
+    time.sleep(0.1)
+    wpas.global_request("INTERFACE_REMOVE " + wpas.ifname)
+    time.sleep(1)

@@ -22,7 +22,7 @@ def get_rfkill(dev):
         for r, s, h in RFKill.list():
             if r.name == phy:
                 return r
-    except Exception, e:
+    except Exception as e:
         raise HwsimSkip("No rfkill available: " + str(e))
     raise HwsimSkip("No rfkill match found for the interface")
 
@@ -30,7 +30,7 @@ def test_rfkill_open(dev, apdev):
     """rfkill block/unblock during open mode connection"""
     rfk = get_rfkill(dev[0])
 
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "open" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
     dev[0].connect("open", key_mgmt="NONE", scan_freq="2412")
     try:
         logger.info("rfkill block")
@@ -64,6 +64,7 @@ def test_rfkill_wpa2_psk(dev, apdev):
     params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
     hapd = hostapd.add_ap(apdev[0], params)
     dev[0].connect(ssid, psk=passphrase, scan_freq="2412")
+    hapd.wait_sta()
     try:
         logger.info("rfkill block")
         rfk.block()
@@ -74,6 +75,7 @@ def test_rfkill_wpa2_psk(dev, apdev):
         rfk.unblock()
         dev[0].wait_connected(timeout=10,
                               error="Missing connection event on rfkill unblock")
+        hapd.wait_sta()
         hwsim_utils.test_connectivity(dev[0], hapd)
     finally:
         rfk.unblock()
@@ -154,7 +156,7 @@ def _test_rfkill_p2p_discovery(dev0, dev1):
             if dev0.get_status_field("wpa_state") != "INTERFACE_DISABLED" and dev1.get_status_field("wpa_state") != "INTERFACE_DISABLED":
                 break
 
-        if not "OK" in dev0.p2p_listen():
+        if "OK" not in dev0.p2p_listen():
             raise Exception("P2P Listen failed after unblocking rfkill")
 
         if not dev1.discover_peer(addr0, social=True):
@@ -182,7 +184,7 @@ def test_rfkill_p2p_discovery_p2p_dev(dev, apdev):
 
 def test_rfkill_hostapd(dev, apdev):
     """rfkill block/unblock during and prior to hostapd operations"""
-    hapd = hostapd.add_ap(apdev[0], { "ssid": "open" })
+    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
 
     rfk = get_rfkill(hapd)
 
@@ -211,7 +213,7 @@ def test_rfkill_hostapd(dev, apdev):
         hglobal.flush()
         hglobal.remove(apdev[0]['ifname'])
 
-        hapd = hostapd.add_ap(apdev[0], { "ssid": "open2" },
+        hapd = hostapd.add_ap(apdev[0], {"ssid": "open2"},
                               no_enable=True)
         if "FAIL" not in hapd.request("ENABLE"):
             raise Exception("ENABLE succeeded unexpectedly (rfkill)")

@@ -8,9 +8,9 @@ HAPD_AS=$DIR/../../hostapd/hostapd
 HAPDCLI=$DIR/../../hostapd/hostapd_cli
 WLANTEST=$DIR/../../wlantest/wlantest
 HLR_AUC_GW=$DIR/../../hostapd/hlr_auc_gw
-DATE="$(date +%s)"
 
 if [ -z "$LOGDIR" ] ; then
+    DATE="$(date +%s)"
     LOGDIR="$DIR/logs/$DATE"
     mkdir -p $LOGDIR
 else
@@ -51,9 +51,10 @@ else
     fi
 fi
 
-if test -w "$DIR/logs" ; then
-    rm -rf $DIR/logs/current
-    ln -sf $DATE $DIR/logs/current
+LOGBASEDIR="$( cd "$(dirname "$LOGDIR")" && pwd )"
+if test "$LOGBASEDIR" = "$DIR/logs" -a -w "$LOGBASEDIR" ; then
+    rm -rf "$LOGBASEDIR/current"
+    ln -sf "$(basename "$LOGDIR")" "$LOGBASEDIR/current"
 fi
 
 if groups | tr ' ' "\n" | grep -q ^admin$; then
@@ -79,12 +80,12 @@ fi
 
 if [ "$1" = "valgrind" ]; then
     VALGRIND=y
-    VALGRIND_WPAS="valgrind --log-file=$LOGDIR/valgrind-wlan%d"
-    VALGRIND_HAPD="valgrind --log-file=$LOGDIR/valgrind-hostapd"
+    VALGRIND_WPAS="valgrind --log-file=$LOGDIR/valgrind-wlan%d --leak-check=full"
+    VALGRIND_HAPD="valgrind --log-file=$LOGDIR/valgrind-hostapd --leak-check=full"
     chmod -f a+rx $WPAS
     chmod -f a+rx $HAPD
     chmod -f a+rx $HAPD_AS
-    HAPD_AS="valgrind --log-file=$LOGDIR/valgrind-auth-serv $HAPD_AS"
+    HAPD_AS="valgrind --log-file=$LOGDIR/valgrind-auth-serv --leak-check=full $HAPD_AS"
     shift
 else
     unset VALGRIND
@@ -109,7 +110,7 @@ else
 	NUM_CH=1
 fi
 
-test -f /proc/modules && sudo modprobe mac80211_hwsim radios=7 channels=$NUM_CH support_p2p_device=0 dyndbg=+p
+test -d /sys/module/mac80211_hwsim || sudo modprobe mac80211_hwsim radios=7 channels=$NUM_CH support_p2p_device=0 dyndbg=+p
 
 sudo ifconfig hwsim0 up
 sudo $WLANTEST -i hwsim0 -n $LOGDIR/hwsim0.pcapng -c -dtN -L $LOGDIR/hwsim0 &
@@ -153,51 +154,6 @@ openssl ocsp -index $DIR/auth_serv/index.txt \
 if [ ! -r $LOGDIR/ocsp-server-cache.der ]; then
     cp $DIR/auth_serv/ocsp-server-cache.der $LOGDIR/ocsp-server-cache.der
 fi
-
-cp $DIR/auth_serv/ocsp-multi-server-cache.der $LOGDIR/ocsp-multi-server-cache.der
-
-openssl ocsp -index $DIR/auth_serv/index.txt \
-    -rsigner $DIR/auth_serv/ocsp-responder.pem \
-    -rkey $DIR/auth_serv/ocsp-responder.key \
-    -resp_key_id \
-    -CA $DIR/auth_serv/ca.pem \
-    -issuer $DIR/auth_serv/ca.pem \
-    -verify_other $DIR/auth_serv/ca.pem -trust_other \
-    -ndays 7 \
-    -reqin $DIR/auth_serv/ocsp-req.der \
-    -respout $LOGDIR/ocsp-server-cache-key-id.der > $LOGDIR/ocsp.log 2>&1
-
-for i in unknown revoked; do
-    openssl ocsp -index $DIR/auth_serv/index-$i.txt \
-	-rsigner $DIR/auth_serv/ocsp-responder.pem \
-	-rkey $DIR/auth_serv/ocsp-responder.key \
-	-CA $DIR/auth_serv/ca.pem \
-	-issuer $DIR/auth_serv/ca.pem \
-	-verify_other $DIR/auth_serv/ca.pem -trust_other \
-	-ndays 7 \
-	-reqin $DIR/auth_serv/ocsp-req.der \
-	-respout $LOGDIR/ocsp-server-cache-$i.der >> $LOGDIR/ocsp.log 2>&1
-done
-
-openssl ocsp -reqout $LOGDIR/ocsp-req.der -issuer $DIR/auth_serv/ca.pem \
-    -sha256 -serial 0xD8D3E3A6CBE3CD17 -no_nonce >> $LOGDIR/ocsp.log 2>&1
-for i in "" "-unknown" "-revoked"; do
-    openssl ocsp -index $DIR/auth_serv/index$i.txt \
-	-rsigner $DIR/auth_serv/ca.pem \
-	-rkey $DIR/auth_serv/ca-key.pem \
-	-CA $DIR/auth_serv/ca.pem \
-	-ndays 7 \
-	-reqin $LOGDIR/ocsp-req.der \
-	-resp_no_certs \
-	-respout $LOGDIR/ocsp-resp-ca-signed$i.der >> $LOGDIR/ocsp.log 2>&1
-done
-openssl ocsp -index $DIR/auth_serv/index.txt \
-    -rsigner $DIR/auth_serv/server.pem \
-    -rkey $DIR/auth_serv/server.key \
-    -CA $DIR/auth_serv/ca.pem \
-    -ndays 7 \
-    -reqin $LOGDIR/ocsp-req.der \
-    -respout $LOGDIR/ocsp-resp-server-signed.der >> $LOGDIR/ocsp.log 2>&1
 
 touch $LOGDIR/hostapd.db
 sudo $HAPD_AS -ddKt $LOGDIR/as.conf $LOGDIR/as2.conf > $LOGDIR/auth_serv &
