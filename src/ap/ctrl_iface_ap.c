@@ -24,6 +24,7 @@
 #include "ap_drv_ops.h"
 #include "mbo_ap.h"
 #include "taxonomy.h"
+#include "wnm_ap.h"
 
 
 static size_t hostapd_write_ht_mcs_bitmask(char *buf, size_t buflen,
@@ -724,15 +725,15 @@ int hostapd_ctrl_iface_status(struct hostapd_data *hapd, char *buf,
 	} else {
 		/* CAC started and CAC time set - calculate remaining time */
 		struct os_reltime now;
-		unsigned int left_time;
+		long left_time;
 
 		os_reltime_age(&iface->dfs_cac_start, &now);
-		left_time = iface->dfs_cac_ms / 1000 - now.sec;
+		left_time = (long) iface->dfs_cac_ms / 1000 - now.sec;
 		ret = os_snprintf(buf + len, buflen - len,
 				  "cac_time_seconds=%u\n"
-				  "cac_time_left_seconds=%u\n",
+				  "cac_time_left_seconds=%lu\n",
 				  iface->dfs_cac_ms / 1000,
-				  left_time);
+				  left_time > 0 ? left_time : 0);
 	}
 	if (os_snprintf_error(buflen - len, ret))
 		return len;
@@ -746,6 +747,7 @@ int hostapd_ctrl_iface_status(struct hostapd_data *hapd, char *buf,
 			  "ieee80211n=%d\n"
 			  "ieee80211ac=%d\n"
 			  "ieee80211ax=%d\n"
+			  "ieee80211be=%d\n"
 			  "beacon_int=%u\n"
 			  "dtim_period=%d\n",
 			  iface->conf->channel,
@@ -758,11 +760,26 @@ int hostapd_ctrl_iface_status(struct hostapd_data *hapd, char *buf,
 			  !hapd->conf->disable_11ac,
 			  iface->conf->ieee80211ax &&
 			  !hapd->conf->disable_11ax,
+			  iface->conf->ieee80211be &&
+			  !hapd->conf->disable_11be,
 			  iface->conf->beacon_int,
 			  hapd->conf->dtim_period);
 	if (os_snprintf_error(buflen - len, ret))
 		return len;
 	len += ret;
+
+#ifdef CONFIG_IEEE80211BE
+	if (iface->conf->ieee80211be && !hapd->conf->disable_11be) {
+		ret = os_snprintf(buf + len, buflen - len,
+				  "eht_oper_chwidth=%d\n"
+				  "eht_oper_centr_freq_seg0_idx=%d\n",
+				  iface->conf->eht_oper_chwidth,
+				  iface->conf->eht_oper_centr_freq_seg0_idx);
+		if (os_snprintf_error(buflen - len, ret))
+			return len;
+		len += ret;
+	}
+#endif /* CONFIG_IEEE80211BE */
 
 #ifdef CONFIG_IEEE80211AX
 	if (iface->conf->ieee80211ax && !hapd->conf->disable_11ax) {
@@ -918,6 +935,7 @@ int hostapd_parse_csa_settings(const char *pos,
 	settings->freq_params.ht_enabled = !!os_strstr(pos, " ht");
 	settings->freq_params.vht_enabled = !!os_strstr(pos, " vht");
 	settings->freq_params.he_enabled = !!os_strstr(pos, " he");
+	settings->freq_params.eht_enabled = !!os_strstr(pos, " eht");
 	settings->block_tx = !!os_strstr(pos, " blocktx");
 #undef SET_CSA_SETTING
 
@@ -1047,3 +1065,351 @@ void * hostapd_ctrl_iface_pmksa_create_entry(const u8 *aa, char *cmd)
 
 #endif /* CONFIG_MESH */
 #endif /* CONFIG_PMKSA_CACHE_EXTERNAL */
+
+
+#ifdef CONFIG_WNM_AP
+
+int hostapd_ctrl_iface_disassoc_imminent(struct hostapd_data *hapd,
+					 const char *cmd)
+{
+	u8 addr[ETH_ALEN];
+	int disassoc_timer;
+	struct sta_info *sta;
+
+	if (hwaddr_aton(cmd, addr))
+		return -1;
+	if (cmd[17] != ' ')
+		return -1;
+	disassoc_timer = atoi(cmd + 17);
+
+	sta = ap_get_sta(hapd, addr);
+	if (sta == NULL) {
+		wpa_printf(MSG_DEBUG, "Station " MACSTR
+			   " not found for disassociation imminent message",
+			   MAC2STR(addr));
+		return -1;
+	}
+
+	return wnm_send_disassoc_imminent(hapd, sta, disassoc_timer);
+}
+
+
+int hostapd_ctrl_iface_ess_disassoc(struct hostapd_data *hapd,
+				    const char *cmd)
+{
+	u8 addr[ETH_ALEN];
+	const char *url, *timerstr;
+	int disassoc_timer;
+	struct sta_info *sta;
+
+	if (hwaddr_aton(cmd, addr))
+		return -1;
+
+	sta = ap_get_sta(hapd, addr);
+	if (sta == NULL) {
+		wpa_printf(MSG_DEBUG, "Station " MACSTR
+			   " not found for ESS disassociation imminent message",
+			   MAC2STR(addr));
+		return -1;
+	}
+
+	timerstr = cmd + 17;
+	if (*timerstr != ' ')
+		return -1;
+	timerstr++;
+	disassoc_timer = atoi(timerstr);
+	if (disassoc_timer < 0 || disassoc_timer > 65535)
+		return -1;
+
+	url = os_strchr(timerstr, ' ');
+	if (url == NULL)
+		return -1;
+	url++;
+
+	return wnm_send_ess_disassoc_imminent(hapd, sta, url, disassoc_timer);
+}
+
+
+int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
+				  const char *cmd)
+{
+	u8 addr[ETH_ALEN];
+	const char *pos, *end;
+	int disassoc_timer = 0;
+	struct sta_info *sta;
+	u8 req_mode = 0, valid_int = 0x01, dialog_token = 0x01;
+	u8 bss_term_dur[12];
+	char *url = NULL;
+	int ret;
+	u8 nei_rep[1000];
+	int nei_len;
+	u8 mbo[10];
+	size_t mbo_len = 0;
+
+	if (hwaddr_aton(cmd, addr)) {
+		wpa_printf(MSG_DEBUG, "Invalid STA MAC address");
+		return -1;
+	}
+
+	sta = ap_get_sta(hapd, addr);
+	if (sta == NULL) {
+		wpa_printf(MSG_DEBUG, "Station " MACSTR
+			   " not found for BSS TM Request message",
+			   MAC2STR(addr));
+		return -1;
+	}
+
+	pos = os_strstr(cmd, " disassoc_timer=");
+	if (pos) {
+		pos += 16;
+		disassoc_timer = atoi(pos);
+		if (disassoc_timer < 0 || disassoc_timer > 65535) {
+			wpa_printf(MSG_DEBUG, "Invalid disassoc_timer");
+			return -1;
+		}
+	}
+
+	pos = os_strstr(cmd, " valid_int=");
+	if (pos) {
+		pos += 11;
+		valid_int = atoi(pos);
+	}
+
+	pos = os_strstr(cmd, " dialog_token=");
+	if (pos) {
+		pos += 14;
+		dialog_token = atoi(pos);
+	}
+
+	pos = os_strstr(cmd, " bss_term=");
+	if (pos) {
+		pos += 10;
+		req_mode |= WNM_BSS_TM_REQ_BSS_TERMINATION_INCLUDED;
+		/* TODO: TSF configurable/learnable */
+		bss_term_dur[0] = 4; /* Subelement ID */
+		bss_term_dur[1] = 10; /* Length */
+		os_memset(&bss_term_dur[2], 0, 8);
+		end = os_strchr(pos, ',');
+		if (end == NULL) {
+			wpa_printf(MSG_DEBUG, "Invalid bss_term data");
+			return -1;
+		}
+		end++;
+		WPA_PUT_LE16(&bss_term_dur[10], atoi(end));
+	}
+
+	nei_len = ieee802_11_parse_candidate_list(cmd, nei_rep,
+						  sizeof(nei_rep));
+	if (nei_len < 0)
+		return -1;
+
+	pos = os_strstr(cmd, " url=");
+	if (pos) {
+		size_t len;
+		pos += 5;
+		end = os_strchr(pos, ' ');
+		if (end)
+			len = end - pos;
+		else
+			len = os_strlen(pos);
+		url = os_malloc(len + 1);
+		if (url == NULL)
+			return -1;
+		os_memcpy(url, pos, len);
+		url[len] = '\0';
+		req_mode |= WNM_BSS_TM_REQ_ESS_DISASSOC_IMMINENT;
+	}
+
+	if (os_strstr(cmd, " pref=1"))
+		req_mode |= WNM_BSS_TM_REQ_PREF_CAND_LIST_INCLUDED;
+	if (os_strstr(cmd, " abridged=1"))
+		req_mode |= WNM_BSS_TM_REQ_ABRIDGED;
+	if (os_strstr(cmd, " disassoc_imminent=1"))
+		req_mode |= WNM_BSS_TM_REQ_DISASSOC_IMMINENT;
+
+#ifdef CONFIG_MBO
+	pos = os_strstr(cmd, "mbo=");
+	if (pos) {
+		unsigned int mbo_reason, cell_pref, reassoc_delay;
+		u8 *mbo_pos = mbo;
+
+		ret = sscanf(pos, "mbo=%u:%u:%u", &mbo_reason,
+			     &reassoc_delay, &cell_pref);
+		if (ret != 3) {
+			wpa_printf(MSG_DEBUG,
+				   "MBO requires three arguments: mbo=<reason>:<reassoc_delay>:<cell_pref>");
+			ret = -1;
+			goto fail;
+		}
+
+		if (mbo_reason > MBO_TRANSITION_REASON_PREMIUM_AP) {
+			wpa_printf(MSG_DEBUG,
+				   "Invalid MBO transition reason code %u",
+				   mbo_reason);
+			ret = -1;
+			goto fail;
+		}
+
+		/* Valid values for Cellular preference are: 0, 1, 255 */
+		if (cell_pref != 0 && cell_pref != 1 && cell_pref != 255) {
+			wpa_printf(MSG_DEBUG,
+				   "Invalid MBO cellular capability %u",
+				   cell_pref);
+			ret = -1;
+			goto fail;
+		}
+
+		if (reassoc_delay > 65535 ||
+		    (reassoc_delay &&
+		     !(req_mode & WNM_BSS_TM_REQ_DISASSOC_IMMINENT))) {
+			wpa_printf(MSG_DEBUG,
+				   "MBO: Assoc retry delay is only valid in disassoc imminent mode");
+			ret = -1;
+			goto fail;
+		}
+
+		*mbo_pos++ = MBO_ATTR_ID_TRANSITION_REASON;
+		*mbo_pos++ = 1;
+		*mbo_pos++ = mbo_reason;
+		*mbo_pos++ = MBO_ATTR_ID_CELL_DATA_PREF;
+		*mbo_pos++ = 1;
+		*mbo_pos++ = cell_pref;
+
+		if (reassoc_delay) {
+			*mbo_pos++ = MBO_ATTR_ID_ASSOC_RETRY_DELAY;
+			*mbo_pos++ = 2;
+			WPA_PUT_LE16(mbo_pos, reassoc_delay);
+			mbo_pos += 2;
+		}
+
+		mbo_len = mbo_pos - mbo;
+	}
+#endif /* CONFIG_MBO */
+
+	ret = wnm_send_bss_tm_req(hapd, sta, req_mode, disassoc_timer,
+				  valid_int, bss_term_dur, dialog_token, url,
+				  nei_len ? nei_rep : NULL, nei_len,
+				  mbo_len ? mbo : NULL, mbo_len);
+#ifdef CONFIG_MBO
+fail:
+#endif /* CONFIG_MBO */
+	os_free(url);
+	return ret;
+}
+
+#endif /* CONFIG_WNM_AP */
+
+
+int hostapd_ctrl_iface_acl_del_mac(struct mac_acl_entry **acl, int *num,
+				   const char *txtaddr)
+{
+	u8 addr[ETH_ALEN];
+	struct vlan_description vlan_id;
+
+	if (!(*num))
+		return 0;
+
+	if (hwaddr_aton(txtaddr, addr))
+		return -1;
+
+	if (hostapd_maclist_found(*acl, *num, addr, &vlan_id))
+		hostapd_remove_acl_mac(acl, num, addr);
+
+	return 0;
+}
+
+
+void hostapd_ctrl_iface_acl_clear_list(struct mac_acl_entry **acl,
+				       int *num)
+{
+	while (*num)
+		hostapd_remove_acl_mac(acl, num, (*acl)[0].addr);
+}
+
+
+int hostapd_ctrl_iface_acl_show_mac(struct mac_acl_entry *acl, int num,
+				    char *buf, size_t buflen)
+{
+	int i = 0, len = 0, ret = 0;
+
+	if (!acl)
+		return 0;
+
+	while (i < num) {
+		ret = os_snprintf(buf + len, buflen - len,
+				  MACSTR " VLAN_ID=%d\n",
+				  MAC2STR(acl[i].addr),
+				  acl[i].vlan_id.untagged);
+		if (ret < 0 || (size_t) ret >= buflen - len)
+			return len;
+		i++;
+		len += ret;
+	}
+	return len;
+}
+
+
+int hostapd_ctrl_iface_acl_add_mac(struct mac_acl_entry **acl, int *num,
+				   const char *cmd)
+{
+	u8 addr[ETH_ALEN];
+	struct vlan_description vlan_id;
+	int ret = 0, vlanid = 0;
+	const char *pos;
+
+	if (hwaddr_aton(cmd, addr))
+		return -1;
+
+	pos = os_strstr(cmd, "VLAN_ID=");
+	if (pos)
+		vlanid = atoi(pos + 8);
+
+	if (!hostapd_maclist_found(*acl, *num, addr, &vlan_id)) {
+		ret = hostapd_add_acl_maclist(acl, num, vlanid, addr);
+		if (ret != -1 && *acl)
+			qsort(*acl, *num, sizeof(**acl), hostapd_acl_comp);
+	}
+
+	return ret < 0 ? -1 : 0;
+}
+
+
+int hostapd_disassoc_accept_mac(struct hostapd_data *hapd)
+{
+	struct sta_info *sta;
+	struct vlan_description vlan_id;
+
+	if (hapd->conf->macaddr_acl != DENY_UNLESS_ACCEPTED)
+		return 0;
+
+	for (sta = hapd->sta_list; sta; sta = sta->next) {
+		if (!hostapd_maclist_found(hapd->conf->accept_mac,
+					   hapd->conf->num_accept_mac,
+					   sta->addr, &vlan_id) ||
+		    (vlan_id.notempty &&
+		     vlan_compare(&vlan_id, sta->vlan_desc)))
+			ap_sta_disconnect(hapd, sta, sta->addr,
+					  WLAN_REASON_UNSPECIFIED);
+	}
+
+	return 0;
+}
+
+
+int hostapd_disassoc_deny_mac(struct hostapd_data *hapd)
+{
+	struct sta_info *sta;
+	struct vlan_description vlan_id;
+
+	for (sta = hapd->sta_list; sta; sta = sta->next) {
+		if (hostapd_maclist_found(hapd->conf->deny_mac,
+					  hapd->conf->num_deny_mac, sta->addr,
+					  &vlan_id) &&
+		    (!vlan_id.notempty ||
+		     !vlan_compare(&vlan_id, sta->vlan_desc)))
+			ap_sta_disconnect(hapd, sta, sta->addr,
+					  WLAN_REASON_UNSPECIFIED);
+	}
+
+	return 0;
+}

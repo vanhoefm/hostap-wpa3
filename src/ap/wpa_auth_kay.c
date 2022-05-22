@@ -138,7 +138,6 @@ static unsigned int conf_offset_val(enum confidentiality_offset co)
 	switch (co) {
 	case CONFIDENTIALITY_OFFSET_30:
 		return 30;
-		break;
 	case CONFIDENTIALITY_OFFSET_50:
 		return 50;
 	default:
@@ -329,7 +328,9 @@ int ieee802_1x_alloc_kay_sm_hapd(struct hostapd_data *hapd,
 				  hapd->conf->macsec_replay_protect,
 				  hapd->conf->macsec_replay_window,
 				  hapd->conf->macsec_port,
-				  hapd->conf->mka_priority, hapd->conf->iface,
+				  hapd->conf->mka_priority,
+				  hapd->conf->macsec_csindex,
+				  hapd->conf->iface,
 				  hapd->own_addr);
 	/* ieee802_1x_kay_init() frees kay_ctx on failure */
 	if (!res)

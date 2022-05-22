@@ -89,12 +89,15 @@ struct wpa_state_machine {
 	unsigned int rx_eapol_key_secure:1;
 	unsigned int update_snonce:1;
 	unsigned int alt_snonce_valid:1;
+	unsigned int waiting_radius_psk:1;
 #ifdef CONFIG_IEEE80211R_AP
 	unsigned int ft_completed:1;
 	unsigned int pmk_r1_name_valid:1;
 #endif /* CONFIG_IEEE80211R_AP */
 	unsigned int is_wnmsleep:1;
 	unsigned int pmkid_set:1;
+
+	unsigned int ptkstart_without_success;
 
 #ifdef CONFIG_OCV
 	int ocv_enabled;
@@ -149,6 +152,7 @@ struct wpa_state_machine {
 
 #ifdef CONFIG_P2P
 	u8 ip_addr[4];
+	unsigned int ip_addr_bit;
 #endif /* CONFIG_P2P */
 
 #ifdef CONFIG_FILS

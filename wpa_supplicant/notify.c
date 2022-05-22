@@ -19,6 +19,7 @@
 #include "rsn_supp/wpa.h"
 #include "fst/fst.h"
 #include "crypto/tls.h"
+#include "bss.h"
 #include "driver_i.h"
 #include "scan.h"
 #include "p2p_supplicant.h"
@@ -381,6 +382,10 @@ void wpas_notify_network_removed(struct wpa_supplicant *wpa_s,
 {
 	if (wpa_s->next_ssid == ssid)
 		wpa_s->next_ssid = NULL;
+	if (wpa_s->last_ssid == ssid)
+		wpa_s->last_ssid = NULL;
+	if (wpa_s->current_ssid == ssid)
+		wpa_s->current_ssid = NULL;
 	if (wpa_s->wpa)
 		wpa_sm_pmksa_cache_flush(wpa_s->wpa, ssid);
 	if (!ssid->p2p_group && wpa_s->global->p2p_group_formation != wpa_s &&
@@ -943,3 +948,32 @@ void wpas_notify_mesh_peer_disconnected(struct wpa_supplicant *wpa_s,
 }
 
 #endif /* CONFIG_MESH */
+
+
+#ifdef CONFIG_INTERWORKING
+
+void wpas_notify_interworking_ap_added(struct wpa_supplicant *wpa_s,
+				       struct wpa_bss *bss,
+				       struct wpa_cred *cred, int excluded,
+				       const char *type, int bh, int bss_load,
+				       int conn_capab)
+{
+	wpa_msg(wpa_s, MSG_INFO, "%s" MACSTR " type=%s%s%s%s id=%d priority=%d sp_priority=%d",
+		excluded ? INTERWORKING_EXCLUDED : INTERWORKING_AP,
+		MAC2STR(bss->bssid), type,
+		bh ? " below_min_backhaul=1" : "",
+		bss_load ? " over_max_bss_load=1" : "",
+		conn_capab ? " conn_capab_missing=1" : "",
+		cred->id, cred->priority, cred->sp_priority);
+
+	wpas_dbus_signal_interworking_ap_added(wpa_s, bss, cred, type, excluded,
+					       bh, bss_load, conn_capab);
+}
+
+
+void wpas_notify_interworking_select_done(struct wpa_supplicant *wpa_s)
+{
+	wpas_dbus_signal_interworking_select_done(wpa_s);
+}
+
+#endif /* CONFIG_INTERWORKING */

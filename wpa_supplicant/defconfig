@@ -101,6 +101,9 @@ CONFIG_EAP_MSCHAPV2=y
 
 # EAP-TLS
 CONFIG_EAP_TLS=y
+# Enable EAP-TLSv1.3 support by default (currently disabled unless explicitly
+# enabled in network configuration)
+#CONFIG_EAP_TLSV1_3=y
 
 # EAL-PEAP
 CONFIG_EAP_PEAP=y
@@ -203,6 +206,9 @@ CONFIG_SMARTCARD=y
 # Support VHT overrides (disable VHT, mask MCS rates, etc.)
 #CONFIG_VHT_OVERRIDES=y
 
+# Support HE overrides
+#CONFIG_HE_OVERRIDES=y
+
 # Development testing
 #CONFIG_EAPOL_TEST=y
 
@@ -248,7 +254,7 @@ CONFIG_CTRL_IFACE=y
 # Simultaneous Authentication of Equals (SAE), WPA3-Personal
 CONFIG_SAE=y
 
-# Enable SAE-PK
+# SAE Public Key, WPA3-Personal
 CONFIG_SAE_PK=y
 
 # Disable scan result processing (ap_scan=1) to save code size by about 1 kB.
@@ -481,6 +487,16 @@ CONFIG_DEBUG_SYSLOG=y
 # IEEE 802.11ac (Very High Throughput) support (mainly for AP mode)
 CONFIG_IEEE80211AC=y
 
+# IEEE 802.11ax HE support (mainly for AP mode)
+CONFIG_IEEE80211AX=y
+
+# IEEE 802.11be EHT support (mainly for AP mode)
+# CONFIG_IEEE80211AX is mandatory for setting CONFIG_IEEE80211BE.
+# Note: This is experimental and work in progress. The definitions are still
+# subject to change and this should not be expected to interoperate with the
+# final IEEE 802.11be version.
+#CONFIG_IEEE80211BE=y
+
 # Wireless Network Management (IEEE Std 802.11v-2011)
 # Note: This is experimental and not complete implementation.
 #CONFIG_WNM=y
@@ -610,8 +626,13 @@ CONFIG_BGSCAN_SIMPLE=y
 # Experimental implementation of draft-harkins-owe-07.txt
 #CONFIG_OWE=y
 
-# Device Provisioning Protocol (DPP)
+# Device Provisioning Protocol (DPP) (also known as Wi-Fi Easy Connect)
 CONFIG_DPP=y
+# DPP version 2 support
+CONFIG_DPP2=y
+# DPP version 3 support (experimental and still changing; do not enable for
+# production use)
+#CONFIG_DPP3=y
 
 # Wired equivalent privacy (WEP)
 # WEP is an obsolete cryptographic data confidentiality algorithm that is not

@@ -156,10 +156,20 @@ CONFIG_IPV6=y
 #CONFIG_IEEE80211AC=y
 
 # IEEE 802.11ax HE support
+#CONFIG_IEEE80211AX=y
+
+# IEEE 802.11be EHT support
+# CONFIG_IEEE80211AX is mandatory for setting CONFIG_IEEE80211BE.
 # Note: This is experimental and work in progress. The definitions are still
 # subject to change and this should not be expected to interoperate with the
-# final IEEE 802.11ax version.
-#CONFIG_IEEE80211AX=y
+# final IEEE 802.11be version.
+#CONFIG_IEEE80211BE=y
+
+# Simultaneous Authentication of Equals (SAE), WPA3-Personal
+#CONFIG_SAE=y
+
+# SAE Public Key, WPA3-Personal
+#CONFIG_SAE_PK=y
 
 # Remove debugging code that is printing out debug messages to stdout.
 # This can be used to reduce the size of the hostapd considerably if debugging
@@ -409,3 +419,11 @@ CONFIG_DPP=y
 # production use.
 # This requires CONFIG_IEEE80211W=y to be enabled, too.
 #CONFIG_PASN=y
+
+# Device Provisioning Protocol (DPP) (also known as Wi-Fi Easy Connect)
+CONFIG_DPP=y
+# DPP version 2 support
+CONFIG_DPP2=y
+# DPP version 3 support (experimental and still changing; do not enable for
+# production use)
+#CONFIG_DPP3=y

@@ -1,6 +1,6 @@
 /*
  * WPA Supplicant
- * Copyright (c) 2003-2019, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2003-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -71,7 +71,7 @@
 
 const char *const wpa_supplicant_version =
 "wpa_supplicant v" VERSION_STR "\n"
-"Copyright (c) 2003-2019, Jouni Malinen <j@w1.fi> and contributors";
+"Copyright (c) 2003-2022, Jouni Malinen <j@w1.fi> and contributors";
 
 const char *const wpa_supplicant_license =
 "This software may be distributed under the terms of the BSD license.\n"
@@ -1701,6 +1701,8 @@ int wpa_supplicant_set_suites(struct wpa_supplicant *wpa_s,
 			 wpa_s->oci_freq_override_ft_assoc);
 	wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_OCI_FREQ_FILS_ASSOC,
 			 wpa_s->oci_freq_override_fils_assoc);
+	wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_DISABLE_EAPOL_G2_TX,
+			 wpa_s->disable_eapol_g2_tx);
 #endif /* CONFIG_TESTING_OPTIONS */
 
 	/* Extended Key ID is only supported in infrastructure BSS so far */
@@ -1772,9 +1774,15 @@ int wpa_supplicant_set_suites(struct wpa_supplicant *wpa_s,
 		if (bss && ssid->bssid_set && ssid->ssid_len == 0 &&
 		    ssid->passphrase && !sae_only) {
 			u8 psk[PMK_LEN];
-		        pbkdf2_sha1(ssid->passphrase, bss->ssid, bss->ssid_len,
-				    4096, psk, PMK_LEN);
-		        wpa_hexdump_key(MSG_MSGDUMP, "PSK (from passphrase)",
+
+			if (pbkdf2_sha1(ssid->passphrase, bss->ssid,
+					bss->ssid_len,
+					4096, psk, PMK_LEN) != 0) {
+				wpa_msg(wpa_s, MSG_WARNING,
+					"Error in pbkdf2_sha1()");
+				return -1;
+			}
+			wpa_hexdump_key(MSG_MSGDUMP, "PSK (from passphrase)",
 					psk, PMK_LEN);
 			wpa_sm_set_pmk(wpa_s->wpa, psk, PMK_LEN, NULL, NULL);
 			psk_set = 1;
@@ -1808,8 +1816,14 @@ int wpa_supplicant_set_suites(struct wpa_supplicant *wpa_s,
 #ifndef CONFIG_NO_PBKDF2
 			if (wpabuf_len(pw) >= 8 && wpabuf_len(pw) < 64 && bss)
 			{
-				pbkdf2_sha1(pw_str, bss->ssid, bss->ssid_len,
-					    4096, psk, PMK_LEN);
+				if (pbkdf2_sha1(pw_str, bss->ssid,
+						bss->ssid_len,
+						4096, psk, PMK_LEN) != 0) {
+					wpa_msg(wpa_s, MSG_WARNING,
+						"Error in pbkdf2_sha1()");
+					ext_password_free(pw);
+					return -1;
+				}
 				os_memset(pw_str, 0, sizeof(pw_str));
 				wpa_hexdump_key(MSG_MSGDUMP, "PSK (from "
 						"external passphrase)",
@@ -2224,6 +2238,7 @@ void wpa_supplicant_associate(struct wpa_supplicant *wpa_s,
 	else
 		rand_style = ssid->mac_addr;
 
+	wpa_s->eapol_failed = 0;
 	wpa_s->multi_ap_ie = 0;
 	wmm_ac_clear_saved_tspecs(wpa_s);
 	wpa_s->reassoc_same_bss = 0;
@@ -2409,6 +2424,23 @@ static int drv_supports_vht(struct wpa_supplicant *wpa_s,
 }
 
 
+static bool ibss_mesh_is_80mhz_avail(int channel, struct hostapd_hw_modes *mode)
+{
+	int i;
+
+	for (i = channel; i < channel + 16; i += 4) {
+		struct hostapd_channel_data *chan;
+
+		chan = hw_get_channel_chan(mode, i, NULL);
+		if (!chan ||
+		    chan->flag & (HOSTAPD_CHAN_DISABLED | HOSTAPD_CHAN_NO_IR))
+			return false;
+	}
+
+	return true;
+}
+
+
 void ibss_mesh_setup_freq(struct wpa_supplicant *wpa_s,
 			  const struct wpa_ssid *ssid,
 			  struct hostapd_freq_params *freq)
@@ -2418,7 +2450,10 @@ void ibss_mesh_setup_freq(struct wpa_supplicant *wpa_s,
 	struct hostapd_hw_modes *mode = NULL;
 	int ht40plus[] = { 36, 44, 52, 60, 100, 108, 116, 124, 132, 149, 157,
 			   184, 192 };
-	int vht80[] = { 36, 52, 100, 116, 132, 149 };
+	int bw80[] = { 5180, 5260, 5500, 5580, 5660, 5745, 5955,
+		       6035, 6115, 6195, 6275, 6355, 6435, 6515,
+		       6595, 6675, 6755, 6835, 6915, 6995 };
+	int bw160[] = { 5955, 6115, 6275, 6435, 6595, 6755, 6915 };
 	struct hostapd_channel_data *pri_chan = NULL, *sec_chan = NULL;
 	u8 channel;
 	int i, chan_idx, ht40 = -1, res, obss_scan = 1;
@@ -2426,7 +2461,7 @@ void ibss_mesh_setup_freq(struct wpa_supplicant *wpa_s,
 	struct hostapd_freq_params vht_freq;
 	int chwidth, seg0, seg1;
 	u32 vht_caps = 0;
-	int is_24ghz;
+	bool is_24ghz, is_6ghz;
 
 	freq->freq = ssid->frequency;
 
@@ -2482,6 +2517,13 @@ void ibss_mesh_setup_freq(struct wpa_supplicant *wpa_s,
 
 	is_24ghz = hw_mode == HOSTAPD_MODE_IEEE80211G ||
 		hw_mode == HOSTAPD_MODE_IEEE80211B;
+
+	/* HT/VHT and corresponding overrides are not applicable to 6 GHz.
+	 * However, HE is mandatory for 6 GHz.
+	 */
+	is_6ghz = is_6ghz_freq(freq->freq);
+	if (is_6ghz)
+		goto skip_to_6ghz;
 
 #ifdef CONFIG_HT_OVERRIDES
 	if (ssid->disable_ht) {
@@ -2610,8 +2652,6 @@ skip_ht40:
 	    !(wpa_s->drv_flags & WPA_DRIVER_FLAGS_VHT_IBSS))
 		return;
 
-	vht_freq = *freq;
-
 #ifdef CONFIG_VHT_OVERRIDES
 	if (ssid->disable_vht) {
 		freq->vht_enabled = 0;
@@ -2619,46 +2659,67 @@ skip_ht40:
 	}
 #endif /* CONFIG_VHT_OVERRIDES */
 
+skip_to_6ghz:
+	vht_freq = *freq;
+
+	/* 6 GHz does not have VHT enabled, so allow that exception here. */
 	vht_freq.vht_enabled = vht_supported(mode);
-	if (!vht_freq.vht_enabled)
+	if (!vht_freq.vht_enabled && !is_6ghz)
 		return;
 
 	/* Enable HE with VHT for 5 GHz */
 	freq->he_enabled = mode->he_capab[ieee80211_mode].he_supported;
 
 	/* setup center_freq1, bandwidth */
-	for (j = 0; j < ARRAY_SIZE(vht80); j++) {
-		if (freq->channel >= vht80[j] &&
-		    freq->channel < vht80[j] + 16)
+	for (j = 0; j < ARRAY_SIZE(bw80); j++) {
+		if (freq->freq >= bw80[j] &&
+		    freq->freq < bw80[j] + 80)
 			break;
 	}
 
-	if (j == ARRAY_SIZE(vht80))
+	if (j == ARRAY_SIZE(bw80) ||
+	    ieee80211_freq_to_chan(bw80[j], &channel) == NUM_HOSTAPD_MODES)
 		return;
 
-	for (i = vht80[j]; i < vht80[j] + 16; i += 4) {
-		struct hostapd_channel_data *chan;
-
-		chan = hw_get_channel_chan(mode, i, NULL);
-		if (!chan)
-			return;
-
-		/* Back to HT configuration if channel not usable */
-		if (chan->flag & (HOSTAPD_CHAN_DISABLED | HOSTAPD_CHAN_NO_IR))
-			return;
-	}
+	/* Back to HT configuration if channel not usable */
+	if (!ibss_mesh_is_80mhz_avail(channel, mode))
+		return;
 
 	chwidth = CHANWIDTH_80MHZ;
-	seg0 = vht80[j] + 6;
+	seg0 = channel + 6;
 	seg1 = 0;
+
+	if ((mode->he_capab[ieee80211_mode].phy_cap[
+		     HE_PHYCAP_CHANNEL_WIDTH_SET_IDX] &
+	     HE_PHYCAP_CHANNEL_WIDTH_SET_160MHZ_IN_5G) && is_6ghz) {
+		/* In 160 MHz, the initial four 20 MHz channels were validated
+		 * above; check the remaining four 20 MHz channels for the total
+		 * of 160 MHz bandwidth.
+		 */
+		if (!ibss_mesh_is_80mhz_avail(channel + 16, mode))
+			return;
+
+		for (j = 0; j < ARRAY_SIZE(bw160); j++) {
+			if (freq->freq == bw160[j]) {
+				chwidth = CHANWIDTH_160MHZ;
+				seg0 = channel + 14;
+				break;
+			}
+		}
+	}
 
 	if (ssid->max_oper_chwidth == CHANWIDTH_80P80MHZ) {
 		/* setup center_freq2, bandwidth */
-		for (k = 0; k < ARRAY_SIZE(vht80); k++) {
+		for (k = 0; k < ARRAY_SIZE(bw80); k++) {
 			/* Only accept 80 MHz segments separated by a gap */
-			if (j == k || abs(vht80[j] - vht80[k]) == 16)
+			if (j == k || abs(bw80[j] - bw80[k]) == 80)
 				continue;
-			for (i = vht80[k]; i < vht80[k] + 16; i += 4) {
+
+			if (ieee80211_freq_to_chan(bw80[k], &channel) ==
+			    NUM_HOSTAPD_MODES)
+				return;
+
+			for (i = channel; i < channel + 16; i += 4) {
 				struct hostapd_channel_data *chan;
 
 				chan = hw_get_channel_chan(mode, i, NULL);
@@ -2672,9 +2733,10 @@ skip_ht40:
 
 				/* Found a suitable second segment for 80+80 */
 				chwidth = CHANWIDTH_80P80MHZ;
-				vht_caps |=
-					VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
-				seg1 = vht80[k] + 6;
+				if (!is_6ghz)
+					vht_caps |=
+						VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
+				seg1 = channel + 6;
 			}
 
 			if (chwidth == CHANWIDTH_80P80MHZ)
@@ -2692,7 +2754,7 @@ skip_ht40:
 		}
 	} else if (ssid->max_oper_chwidth == CHANWIDTH_USE_HT) {
 		chwidth = CHANWIDTH_USE_HT;
-		seg0 = vht80[j] + 2;
+		seg0 = channel + 2;
 #ifdef CONFIG_HT_OVERRIDES
 		if (ssid->disable_ht40)
 			seg0 = 0;
@@ -2709,9 +2771,11 @@ skip_ht40:
 				    freq->channel, ssid->enable_edmg,
 				    ssid->edmg_channel, freq->ht_enabled,
 				    vht_freq.vht_enabled, freq->he_enabled,
+				    false,
 				    freq->sec_channel_offset,
 				    chwidth, seg0, seg1, vht_caps,
-				    &mode->he_capab[ieee80211_mode]) != 0)
+				    &mode->he_capab[ieee80211_mode],
+				    NULL) != 0)
 		return;
 
 	*freq = vht_freq;
@@ -3574,6 +3638,11 @@ static void wpas_start_assoc_cb(struct wpa_radio_work *work, int deinit)
        struct ieee80211_vht_capabilities vhtcaps_mask;
 #endif /* CONFIG_VHT_OVERRIDES */
 
+	wpa_s->roam_in_progress = false;
+#ifdef CONFIG_WNM
+	wpa_s->bss_trans_mgmt_in_progress = false;
+#endif /* CONFIG_WNM */
+
 	if (deinit) {
 		if (work->started) {
 			wpa_s->connect_work = NULL;
@@ -4190,7 +4259,7 @@ struct wpa_ssid * wpa_supplicant_add_network(struct wpa_supplicant *wpa_s)
  */
 int wpa_supplicant_remove_network(struct wpa_supplicant *wpa_s, int id)
 {
-	struct wpa_ssid *ssid;
+	struct wpa_ssid *ssid, *prev = wpa_s->current_ssid;
 	int was_disabled;
 
 	ssid = wpa_config_get_network(wpa_s->conf, id);
@@ -4198,10 +4267,7 @@ int wpa_supplicant_remove_network(struct wpa_supplicant *wpa_s, int id)
 		return -1;
 	wpas_notify_network_removed(wpa_s, ssid);
 
-	if (wpa_s->last_ssid == ssid)
-		wpa_s->last_ssid = NULL;
-
-	if (ssid == wpa_s->current_ssid || !wpa_s->current_ssid) {
+	if (ssid == prev || !prev) {
 #ifdef CONFIG_SME
 		wpa_s->sme.prev_bssid_set = 0;
 #endif /* CONFIG_SME */
@@ -4212,7 +4278,7 @@ int wpa_supplicant_remove_network(struct wpa_supplicant *wpa_s, int id)
 		eapol_sm_invalidate_cached_session(wpa_s->eapol);
 	}
 
-	if (ssid == wpa_s->current_ssid) {
+	if (ssid == prev) {
 		wpa_sm_set_config(wpa_s->wpa, NULL);
 		eapol_sm_notify_config(wpa_s->eapol, NULL, NULL);
 
@@ -4275,8 +4341,6 @@ int wpa_supplicant_remove_all_networks(struct wpa_supplicant *wpa_s)
 
 		id = ssid->id;
 		ssid = ssid->next;
-		if (wpa_s->last_ssid == remove_ssid)
-			wpa_s->last_ssid = NULL;
 		wpas_notify_network_removed(wpa_s, remove_ssid);
 		wpa_config_remove_network(wpa_s->conf, id);
 	}
@@ -4462,6 +4526,82 @@ void wpa_supplicant_select_network(struct wpa_supplicant *wpa_s,
 
 	if (ssid)
 		wpas_notify_network_selected(wpa_s, ssid);
+}
+
+
+/**
+ * wpas_remove_cred - Remove the specified credential and all the network
+ * entries created based on the removed credential
+ * @wpa_s: wpa_supplicant structure for a network interface
+ * @cred: The credential to remove
+ * Returns: 0 on success, -1 on failure
+ */
+int wpas_remove_cred(struct wpa_supplicant *wpa_s, struct wpa_cred *cred)
+{
+	struct wpa_ssid *ssid, *next;
+	int id;
+
+	if (!cred) {
+		wpa_printf(MSG_DEBUG, "Could not find cred");
+		return -1;
+	}
+
+	id = cred->id;
+	if (wpa_config_remove_cred(wpa_s->conf, id) < 0) {
+		wpa_printf(MSG_DEBUG, "Could not find cred %d", id);
+		return -1;
+	}
+
+	wpa_msg(wpa_s, MSG_INFO, CRED_REMOVED "%d", id);
+
+	/* Remove any network entry created based on the removed credential */
+	ssid = wpa_s->conf->ssid;
+	while (ssid) {
+		next = ssid->next;
+
+		if (ssid->parent_cred == cred) {
+			wpa_printf(MSG_DEBUG,
+				   "Remove network id %d since it used the removed credential",
+				   ssid->id);
+			if (wpa_supplicant_remove_network(wpa_s, ssid->id) ==
+			    -1) {
+				wpa_printf(MSG_DEBUG,
+					   "Could not find network id=%d",
+					   ssid->id);
+			}
+		}
+
+		ssid = next;
+	}
+
+	return 0;
+}
+
+
+/**
+ * wpas_remove_cred - Remove all the Interworking credentials
+ * @wpa_s: wpa_supplicant structure for a network interface
+ * Returns: 0 on success, -1 on failure
+ */
+int wpas_remove_all_creds(struct wpa_supplicant *wpa_s)
+{
+	int res, ret = 0;
+	struct wpa_cred *cred, *prev;
+
+	cred = wpa_s->conf->cred;
+	while (cred) {
+		prev = cred;
+		cred = cred->next;
+		res = wpas_remove_cred(wpa_s, prev);
+		if (res < 0) {
+			wpa_printf(MSG_DEBUG,
+				   "Removal of all credentials failed - failed to remove credential id=%d",
+				   prev->id);
+			ret = -1;
+		}
+	}
+
+	return ret;
 }
 
 
@@ -4812,8 +4952,13 @@ static int wpa_supplicant_set_driver(struct wpa_supplicant *wpa_s,
 	}
 
 	if (name == NULL) {
-		/* default to first driver in the list */
-		return select_driver(wpa_s, 0);
+		/* Default to first successful driver in the list */
+		for (i = 0; wpa_drivers[i]; i++) {
+			if (select_driver(wpa_s, i) == 0)
+				return 0;
+		}
+		/* Drivers have each reported failure, so no wpa_msg() here. */
+		return -1;
 	}
 
 	do {
@@ -4848,6 +4993,7 @@ static int wpa_supplicant_set_driver(struct wpa_supplicant *wpa_s,
  * @src_addr: Source address of the EAPOL frame
  * @buf: EAPOL data starting from the EAPOL header (i.e., no Ethernet header)
  * @len: Length of the EAPOL data
+ * @encrypted: Whether the frame was encrypted
  *
  * This function is called for each received EAPOL frame. Most driver
  * interfaces rely on more generic OS mechanism for receiving frames through
@@ -4856,11 +5002,13 @@ static int wpa_supplicant_set_driver(struct wpa_supplicant *wpa_s,
  * code by calling this function.
  */
 void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
-			     const u8 *buf, size_t len)
+			     const u8 *buf, size_t len,
+			     enum frame_encryption encrypted)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 
-	wpa_dbg(wpa_s, MSG_DEBUG, "RX EAPOL from " MACSTR, MAC2STR(src_addr));
+	wpa_dbg(wpa_s, MSG_DEBUG, "RX EAPOL from " MACSTR " (encrypted=%d)",
+		MAC2STR(src_addr), encrypted);
 	wpa_hexdump(MSG_MSGDUMP, "RX EAPOL", buf, len);
 
 	if (wpa_s->own_disconnect_req) {
@@ -4906,6 +5054,7 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 			os_get_reltime(&wpa_s->pending_eapol_rx_time);
 			os_memcpy(wpa_s->pending_eapol_rx_src, src_addr,
 				  ETH_ALEN);
+			wpa_s->pending_eapol_encrypted = encrypted;
 		}
 		return;
 	}
@@ -4915,7 +5064,8 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 
 #ifdef CONFIG_AP
 	if (wpa_s->ap_iface) {
-		wpa_supplicant_ap_rx_eapol(wpa_s, src_addr, buf, len);
+		wpa_supplicant_ap_rx_eapol(wpa_s, src_addr, buf, len,
+					   encrypted);
 		return;
 	}
 #endif /* CONFIG_AP */
@@ -4975,7 +5125,8 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 #ifdef CONFIG_IBSS_RSN
 	if (wpa_s->current_ssid &&
 	    wpa_s->current_ssid->mode == WPAS_MODE_IBSS) {
-		ibss_rsn_rx_eapol(wpa_s->ibss_rsn, src_addr, buf, len);
+		ibss_rsn_rx_eapol(wpa_s->ibss_rsn, src_addr, buf, len,
+				  encrypted);
 		return;
 	}
 #endif /* CONFIG_IBSS_RSN */
@@ -4990,11 +5141,12 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 	if (!wpa_key_mgmt_wpa_psk(wpa_s->key_mgmt) &&
 	    wpa_s->key_mgmt != WPA_KEY_MGMT_OWE &&
 	    wpa_s->key_mgmt != WPA_KEY_MGMT_DPP &&
-	    eapol_sm_rx_eapol(wpa_s->eapol, src_addr, buf, len) > 0)
+	    eapol_sm_rx_eapol(wpa_s->eapol, src_addr, buf, len,
+			      encrypted) > 0)
 		return;
 	wpa_drv_poll(wpa_s);
 	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_PSK))
-		wpa_sm_rx_eapol(wpa_s->wpa, src_addr, buf, len);
+		wpa_sm_rx_eapol(wpa_s->wpa, src_addr, buf, len, encrypted);
 	else if (wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt)) {
 		/*
 		 * Set portValid = true here since we are going to skip 4-way
@@ -5004,6 +5156,14 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 		 */
 		eapol_sm_notify_portValid(wpa_s->eapol, true);
 	}
+}
+
+
+static void wpa_supplicant_rx_eapol_cb(void *ctx, const u8 *src_addr,
+				       const u8 *buf, size_t len)
+{
+	wpa_supplicant_rx_eapol(ctx, src_addr, buf, len,
+				FRAME_ENCRYPTION_UNKNOWN);
 }
 
 
@@ -5024,7 +5184,7 @@ int wpa_supplicant_update_mac_addr(struct wpa_supplicant *wpa_s)
 					   wpa_drv_get_mac_addr(wpa_s),
 					   ETH_P_EAPOL,
 					   wpas_eapol_needs_l2_packet(wpa_s) ?
-					   wpa_supplicant_rx_eapol : NULL,
+					   wpa_supplicant_rx_eapol_cb : NULL,
 					   wpa_s, 0);
 		if (wpa_s->l2 == NULL)
 			return -1;
@@ -5078,7 +5238,7 @@ static void wpa_supplicant_rx_eapol_bridge(void *ctx, const u8 *src_addr,
 	wpa_dbg(wpa_s, MSG_DEBUG, "RX EAPOL from " MACSTR " to " MACSTR
 		" (bridge)", MAC2STR(src_addr), MAC2STR(eth->h_dest));
 	wpa_supplicant_rx_eapol(wpa_s, src_addr, buf + sizeof(*eth),
-				len - sizeof(*eth));
+				len - sizeof(*eth), FRAME_ENCRYPTION_UNKNOWN);
 }
 
 
@@ -5804,6 +5964,7 @@ static const u8 * wpas_fst_get_peer_next(void *ctx,
 void fst_wpa_supplicant_fill_iface_obj(struct wpa_supplicant *wpa_s,
 				       struct fst_wpa_obj *iface_obj)
 {
+	os_memset(iface_obj, 0, sizeof(*iface_obj));
 	iface_obj->ctx              = wpa_s;
 	iface_obj->get_bssid        = wpas_fst_get_bssid_cb;
 	iface_obj->get_channel_info = wpas_fst_get_channel_info_cb;
@@ -6576,6 +6737,7 @@ static int wpa_supplicant_init_iface(struct wpa_supplicant *wpa_s,
 		wpa_s->drv_flags2 = capa.flags2;
 		wpa_s->drv_enc = capa.enc;
 		wpa_s->drv_rrm_flags = capa.rrm_flags;
+		wpa_s->drv_max_acl_mac_addrs = capa.max_acl_mac_addrs;
 		wpa_s->probe_resp_offloads = capa.probe_resp_offloads;
 		wpa_s->max_scan_ssids = capa.max_scan_ssids;
 		wpa_s->max_sched_scan_ssids = capa.max_sched_scan_ssids;
@@ -8052,6 +8214,10 @@ void wpas_request_disconnection(struct wpa_supplicant *wpa_s)
 	eloop_cancel_timeout(wpas_network_reenabled, wpa_s, NULL);
 	radio_remove_works(wpa_s, "connect", 0);
 	radio_remove_works(wpa_s, "sme-connect", 0);
+	wpa_s->roam_in_progress = false;
+#ifdef CONFIG_WNM
+	wpa_s->bss_trans_mgmt_in_progress = false;
+#endif /* CONFIG_WNM */
 }
 
 

@@ -124,6 +124,9 @@ struct eap_config {
 	 * callback context.
 	 */
 	void *eap_sim_db_priv;
+
+	struct crypto_rsa_key *imsi_privacy_key;
+
 	bool backend_auth;
 	int eap_server;
 
@@ -258,6 +261,10 @@ struct eap_config {
 
 	unsigned int max_auth_rounds;
 	unsigned int max_auth_rounds_short;
+
+#ifdef CONFIG_TESTING_OPTIONS
+	bool skip_prot_success;
+#endif /* CONFIG_TESTING_OPTIONS */
 };
 
 struct eap_session_data {

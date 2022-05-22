@@ -27,6 +27,7 @@ struct wpa_sm {
 	size_t pmk_len;
 	struct wpa_ptk ptk, tptk;
 	int ptk_set, tptk_set;
+	bool tk_set; /* Whether any TK is configured to the driver */
 	unsigned int msg_3_of_4_ok:1;
 	u8 snonce[WPA_NONCE_LEN];
 	u8 anonce[WPA_NONCE_LEN]; /* ANonce from the last 1/4 msg */
@@ -185,6 +186,7 @@ struct wpa_sm {
 	unsigned int oci_freq_override_eapol_g2;
 	unsigned int oci_freq_override_ft_assoc;
 	unsigned int oci_freq_override_fils_assoc;
+	unsigned int disable_eapol_g2_tx;
 #endif /* CONFIG_TESTING_OPTIONS */
 
 #ifdef CONFIG_FILS

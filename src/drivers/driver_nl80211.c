@@ -2936,6 +2936,8 @@ static int wpa_driver_nl80211_del_beacon(struct i802_bss *bss)
 
 	wpa_printf(MSG_DEBUG, "nl80211: Remove beacon (ifindex=%d)",
 		   drv->ifindex);
+	bss->beacon_set = 0;
+	bss->freq = 0;
 	nl80211_put_wiphy_data_ap(bss);
 	msg = nl80211_drv_msg(drv, 0, NL80211_CMD_DEL_BEACON);
 	return send_and_recv_msgs(drv, msg, NULL, NULL, NULL, NULL);
@@ -4656,10 +4658,24 @@ static int wpa_driver_nl80211_set_ap(void *priv,
 	     nla_put_flag(msg, NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT)))
 		goto fail;
 
-	if (drv->device_ap_sme &&
-	    (params->key_mgmt_suites & WPA_KEY_MGMT_SAE) &&
-	    nla_put_flag(msg, NL80211_ATTR_EXTERNAL_AUTH_SUPPORT))
-		goto fail;
+	if (drv->device_ap_sme) {
+		u32 flags = 0;
+
+		if (params->key_mgmt_suites & WPA_KEY_MGMT_SAE) {
+			/* Add the previously used flag attribute to support
+			 * older kernel versions and the newer flag bit for
+			 * newer kernels. */
+			if (nla_put_flag(msg,
+					 NL80211_ATTR_EXTERNAL_AUTH_SUPPORT))
+				goto fail;
+			flags |= NL80211_AP_SETTINGS_EXTERNAL_AUTH_SUPPORT;
+		}
+
+		flags |= NL80211_AP_SETTINGS_SA_QUERY_OFFLOAD_SUPPORT;
+
+		if (nla_put_u32(msg, NL80211_ATTR_AP_SETTINGS_FLAGS, flags))
+			goto fail;
+	}
 
 	wpa_printf(MSG_DEBUG, "nl80211: pairwise_ciphers=0x%x",
 		   params->pairwise_ciphers);
@@ -4893,15 +4909,19 @@ static int nl80211_put_freq_params(struct nl_msg *msg,
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY_FREQ, freq->freq))
 		return -ENOBUFS;
 
+	wpa_printf(MSG_DEBUG, "  * eht_enabled=%d", freq->eht_enabled);
 	wpa_printf(MSG_DEBUG, "  * he_enabled=%d", freq->he_enabled);
 	wpa_printf(MSG_DEBUG, "  * vht_enabled=%d", freq->vht_enabled);
 	wpa_printf(MSG_DEBUG, "  * ht_enabled=%d", freq->ht_enabled);
+	wpa_printf(MSG_DEBUG, "  * radar_background=%d",
+		   freq->radar_background);
 
 	hw_mode = ieee80211_freq_to_chan(freq->freq, &channel);
 	is_24ghz = hw_mode == HOSTAPD_MODE_IEEE80211G ||
 		hw_mode == HOSTAPD_MODE_IEEE80211B;
 
-	if (freq->vht_enabled || (freq->he_enabled && !is_24ghz)) {
+	if (freq->vht_enabled ||
+	    ((freq->he_enabled || freq->eht_enabled) && !is_24ghz)) {
 		enum nl80211_chan_width cw;
 
 		wpa_printf(MSG_DEBUG, "  * bandwidth=%d", freq->bandwidth);
@@ -4973,6 +4993,10 @@ static int nl80211_put_freq_params(struct nl_msg *msg,
 				NL80211_CHAN_NO_HT))
 			return -ENOBUFS;
 	}
+	if (freq->radar_background &&
+	    nla_put_flag(msg, NL80211_ATTR_RADAR_BACKGROUND))
+		return -ENOBUFS;
+
 	return 0;
 }
 
@@ -4985,9 +5009,10 @@ static int nl80211_set_channel(struct i802_bss *bss,
 	int ret;
 
 	wpa_printf(MSG_DEBUG,
-		   "nl80211: Set freq %d (ht_enabled=%d, vht_enabled=%d, he_enabled=%d, bandwidth=%d MHz, cf1=%d MHz, cf2=%d MHz)",
-		   freq->freq, freq->ht_enabled, freq->vht_enabled, freq->he_enabled,
-		   freq->bandwidth, freq->center_freq1, freq->center_freq2);
+		   "nl80211: Set freq %d (ht_enabled=%d, vht_enabled=%d, he_enabled=%d, eht_enabled=%d, bandwidth=%d MHz, cf1=%d MHz, cf2=%d MHz)",
+		   freq->freq, freq->ht_enabled, freq->vht_enabled,
+		   freq->he_enabled, freq->eht_enabled, freq->bandwidth,
+		   freq->center_freq1, freq->center_freq2);
 
 	msg = nl80211_drv_msg(drv, 0, set_chan ? NL80211_CMD_SET_CHANNEL :
 			      NL80211_CMD_SET_WIPHY);
@@ -5133,6 +5158,14 @@ static int wpa_driver_nl80211_sta_add(void *priv,
 			if (nla_put(msg, NL80211_ATTR_HE_6GHZ_CAPABILITY,
 				    sizeof(*params->he_6ghz_capab),
 				    params->he_6ghz_capab))
+				goto fail;
+		}
+
+		if (params->eht_capab) {
+			wpa_hexdump(MSG_DEBUG, "  * eht_capab",
+				    params->eht_capab, params->eht_capab_len);
+			if (nla_put(msg, NL80211_ATTR_EHT_CAPABILITY,
+				    params->eht_capab_len, params->eht_capab))
 				goto fail;
 		}
 
@@ -8150,6 +8183,11 @@ static int nl80211_send_frame_cmd(struct i802_bss *bss,
 		if (save_cookie)
 			drv->send_frame_cookie = no_ack ? (u64) -1 : cookie;
 
+		if (!wait) {
+			 /* There is no need to store this cookie since there
+			  * is no wait that could be canceled later.  */
+			goto fail;
+		}
 		if (drv->num_send_frame_cookies == MAX_SEND_FRAME_COOKIES) {
 			wpa_printf(MSG_DEBUG,
 				   "nl80211: Drop oldest pending send frame cookie 0x%llx",
@@ -8280,7 +8318,8 @@ static void wpa_driver_nl80211_send_action_cancel_wait(void *priv)
 	u64 cookie;
 
 	/* Cancel the last pending TX cookie */
-	nl80211_frame_wait_cancel(bss, drv->send_frame_cookie);
+	if (drv->send_frame_cookie != (u64) -1)
+		nl80211_frame_wait_cancel(bss, drv->send_frame_cookie);
 
 	/*
 	 * Cancel the other pending TX cookies, if any. This is needed since
@@ -8472,7 +8511,6 @@ static int wpa_driver_nl80211_deinit_ap(void *priv)
 	if (!is_ap_interface(drv->nlmode))
 		return -1;
 	wpa_driver_nl80211_del_beacon(bss);
-	bss->beacon_set = 0;
 
 	/*
 	 * If the P2P GO interface was dynamically added, then it is
@@ -8492,7 +8530,6 @@ static int wpa_driver_nl80211_stop_ap(void *priv)
 	if (!is_ap_interface(drv->nlmode))
 		return -1;
 	wpa_driver_nl80211_del_beacon(bss);
-	bss->beacon_set = 0;
 	return 0;
 }
 
@@ -9930,6 +9967,87 @@ error:
 }
 
 
+#ifdef CONFIG_IEEE80211AX
+static int nl80211_switch_color(void *priv, struct cca_settings *settings)
+{
+	struct i802_bss *bss = priv;
+	struct wpa_driver_nl80211_data *drv = bss->drv;
+	struct nlattr *beacon_cca;
+	struct nl_msg *msg;
+	int ret = -ENOBUFS;
+
+	wpa_printf(MSG_DEBUG,
+		   "nl80211: Color change request (cca_count=%u color=%d)",
+		   settings->cca_count, settings->cca_color);
+
+	if (drv->nlmode != NL80211_IFTYPE_AP)
+		return -EOPNOTSUPP;
+
+	if (!settings->beacon_cca.tail)
+		return -EINVAL;
+
+	if (settings->beacon_cca.tail_len <= settings->counter_offset_beacon ||
+	    settings->beacon_cca.tail[settings->counter_offset_beacon] !=
+	    settings->cca_count)
+		return -EINVAL;
+
+	if (settings->beacon_cca.probe_resp &&
+	    (settings->beacon_cca.probe_resp_len <=
+	     settings->counter_offset_presp ||
+	     settings->beacon_cca.probe_resp[settings->counter_offset_presp] !=
+	     settings->cca_count))
+		return -EINVAL;
+
+	msg = nl80211_bss_msg(bss, 0, NL80211_CMD_COLOR_CHANGE_REQUEST);
+	if (!msg ||
+	    nla_put_u8(msg, NL80211_ATTR_COLOR_CHANGE_COUNT,
+		       settings->cca_count) ||
+	    nla_put_u8(msg, NL80211_ATTR_COLOR_CHANGE_COLOR,
+		       settings->cca_color))
+		goto error;
+
+	/* beacon_after params */
+	ret = set_beacon_data(msg, &settings->beacon_after);
+	if (ret)
+		goto error;
+
+	/* beacon_csa params */
+	beacon_cca = nla_nest_start(msg, NL80211_ATTR_COLOR_CHANGE_ELEMS);
+	if (!beacon_cca) {
+		ret = -ENOBUFS;
+		goto error;
+	}
+
+	ret = set_beacon_data(msg, &settings->beacon_cca);
+	if (ret)
+		goto error;
+
+	if (nla_put_u16(msg, NL80211_ATTR_CNTDWN_OFFS_BEACON,
+			settings->counter_offset_beacon) ||
+	    (settings->beacon_cca.probe_resp &&
+	     nla_put_u16(msg, NL80211_ATTR_CNTDWN_OFFS_PRESP,
+			 settings->counter_offset_presp))) {
+		ret = -ENOBUFS;
+		goto error;
+	}
+
+	nla_nest_end(msg, beacon_cca);
+	ret = send_and_recv_msgs(drv, msg, NULL, NULL, NULL, NULL);
+	if (ret) {
+		wpa_printf(MSG_DEBUG,
+			   "nl80211: switch_color failed err=%d (%s)",
+			   ret, strerror(-ret));
+	}
+	return ret;
+
+error:
+	nlmsg_free(msg);
+	wpa_printf(MSG_DEBUG, "nl80211: Could not build color switch request");
+	return ret;
+}
+#endif /* CONFIG_IEEE80211AX */
+
+
 static int nl80211_add_ts(void *priv, u8 tsid, const u8 *addr,
 			  u8 user_priority, u16 admitted_time)
 {
@@ -10475,6 +10593,9 @@ static int nl80211_put_mesh_config(struct nl_msg *msg,
 	if (((params->flags & WPA_DRIVER_MESH_CONF_FLAG_AUTO_PLINKS) &&
 	     nla_put_u8(msg, NL80211_MESHCONF_AUTO_OPEN_PLINKS,
 			params->auto_plinks)) ||
+	    ((params->flags & WPA_DRIVER_MESH_CONF_FLAG_FORWARDING) &&
+	     nla_put_u8(msg, NL80211_MESHCONF_FORWARDING,
+			params->forwarding)) ||
 	    ((params->flags & WPA_DRIVER_MESH_CONF_FLAG_MAX_PEER_LINKS) &&
 	     nla_put_u16(msg, NL80211_MESHCONF_MAX_PEER_LINKS,
 			 params->max_peer_links)) ||
@@ -10623,6 +10744,7 @@ static int wpa_driver_nl80211_leave_mesh(void *priv)
 	} else {
 		wpa_printf(MSG_DEBUG,
 			   "nl80211: mesh leave request send successfully");
+		drv->first_bss->freq = 0;
 	}
 
 	if (drv->start_mode_sta &&
@@ -11047,6 +11169,8 @@ static int nl80211_qca_do_acs(struct wpa_driver_nl80211_data *drv,
 	     nla_put_flag(msg, QCA_WLAN_VENDOR_ATTR_ACS_HT40_ENABLED)) ||
 	    (params->vht_enabled &&
 	     nla_put_flag(msg, QCA_WLAN_VENDOR_ATTR_ACS_VHT_ENABLED)) ||
+	    (params->eht_enabled &&
+	     nla_put_flag(msg, QCA_WLAN_VENDOR_ATTR_ACS_EHT_ENABLED)) ||
 	    nla_put_u16(msg, QCA_WLAN_VENDOR_ATTR_ACS_CHWIDTH,
 			params->ch_width) ||
 	    add_acs_ch_list(msg, params->freq_list) ||
@@ -11059,9 +11183,10 @@ static int nl80211_qca_do_acs(struct wpa_driver_nl80211_data *drv,
 	nla_nest_end(msg, data);
 
 	wpa_printf(MSG_DEBUG,
-		   "nl80211: ACS Params: HW_MODE: %d HT: %d HT40: %d VHT: %d BW: %d EDMG: %d",
+		   "nl80211: ACS Params: HW_MODE: %d HT: %d HT40: %d VHT: %d EHT: %d BW: %d EDMG: %d",
 		   params->hw_mode, params->ht_enabled, params->ht40_enabled,
-		   params->vht_enabled, params->ch_width, params->edmg_enabled);
+		   params->vht_enabled, params->eht_enabled, params->ch_width,
+		   params->edmg_enabled);
 
 	ret = send_and_recv_msgs(drv, msg, NULL, NULL, NULL, NULL);
 	if (ret) {
@@ -12092,6 +12217,7 @@ static int nl80211_dpp_listen(void *priv, bool enable)
 
 
 #ifdef CONFIG_TESTING_OPTIONS
+
 static int testing_nl80211_register_frame(void *priv, u16 type,
 					  const u8 *match, size_t match_len,
 					  bool multicast)
@@ -12105,6 +12231,33 @@ static int testing_nl80211_register_frame(void *priv, u16 type,
 	return nl80211_register_frame(bss, handle, type, match, match_len,
 				      multicast);
 }
+
+
+static int testing_nl80211_radio_disable(void *priv, int disabled)
+{
+	struct i802_bss *bss = priv;
+	struct wpa_driver_nl80211_data *drv = bss->drv;
+
+	/* For now, this is supported only partially in station mode with
+	 * SME-in-wpa_supplicant case where the NL80211_ATTR_LOCAL_STATE_CHANGE
+	 * attribute can be used to avoid sending out the Deauthentication frame
+	 * to the currently associated AP. */
+
+	if (!disabled)
+		return 0;
+
+	if (!(drv->capa.flags & WPA_DRIVER_FLAGS_SME))
+		return -1;
+
+	if (!drv->associated)
+		return 0;
+
+	return wpa_driver_nl80211_mlme(drv, drv->bssid,
+				       NL80211_CMD_DEAUTHENTICATE,
+				       WLAN_REASON_PREV_AUTH_NOT_VALID, 1,
+				       drv->first_bss);
+}
+
 #endif /* CONFIG_TESTING_OPTIONS */
 
 
@@ -12192,6 +12345,9 @@ const struct wpa_driver_ops wpa_driver_nl80211_ops = {
 	.get_survey = wpa_driver_nl80211_get_survey,
 	.status = wpa_driver_nl80211_status,
 	.switch_channel = nl80211_switch_channel,
+#ifdef CONFIG_IEEE80211AX
+	.switch_color = nl80211_switch_color,
+#endif /* CONFIG_IEEE80211AX */
 #ifdef ANDROID_P2P
 	.set_noa = wpa_driver_set_p2p_noa,
 	.get_noa = wpa_driver_get_p2p_noa,
@@ -12248,5 +12404,6 @@ const struct wpa_driver_ops wpa_driver_nl80211_ops = {
 #endif /* CONFIG_DPP */
 #ifdef CONFIG_TESTING_OPTIONS
 	.register_frame = testing_nl80211_register_frame,
+	.radio_disable = testing_nl80211_radio_disable,
 #endif /* CONFIG_TESTING_OPTIONS */
 };

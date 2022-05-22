@@ -339,6 +339,12 @@ ifdef CONFIG_IEEE80211AC
 CFLAGS += -DCONFIG_IEEE80211AC
 endif
 
+ifdef CONFIG_IEEE80211BE
+CONFIG_IEEE80211AX=y
+CFLAGS += -DCONFIG_IEEE80211BE
+OBJS += ../src/ap/ieee802_11_eht.o
+endif
+
 ifdef CONFIG_IEEE80211AX
 CFLAGS += -DCONFIG_IEEE80211AX
 OBJS += ../src/ap/ieee802_11_he.o
@@ -593,6 +599,9 @@ NEED_ASN1=y
 ifdef CONFIG_DPP2
 CFLAGS += -DCONFIG_DPP2
 endif
+ifdef CONFIG_DPP3
+CFLAGS += -DCONFIG_DPP3
+endif
 endif
 
 ifdef CONFIG_PASN
@@ -705,6 +714,7 @@ endif
 endif
 
 ifeq ($(CONFIG_TLS), openssl)
+CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
 CONFIG_CRYPTO=openssl
 ifdef TLS_FUNCS
 OBJS += ../src/crypto/tls_openssl.o
@@ -929,9 +939,11 @@ endif
 ifdef NEED_AES_ENCBLOCK
 AESOBJS += ../src/crypto/aes-encblock.o
 endif
+ifneq ($(CONFIG_TLS), openssl)
 ifneq ($(CONFIG_TLS), linux)
 ifneq ($(CONFIG_TLS), wolfssl)
 AESOBJS += ../src/crypto/aes-omac1.o
+endif
 endif
 endif
 ifdef NEED_AES_UNWRAP

@@ -234,7 +234,7 @@ def test_sae_group_nego(dev, apdev):
     params['sae_groups'] = '19'
     hostapd.add_ap(apdev[0], params)
 
-    dev[0].request("SET sae_groups 25 26 20 19")
+    dev[0].request("SET sae_groups 25 20 19")
     dev[0].connect("test-sae-group-nego", psk="12345678", key_mgmt="SAE",
                    scan_freq="2412")
     if dev[0].get_status_field('sae_group') != '19':
@@ -1490,8 +1490,7 @@ def test_sae_bignum_failure(dev, apdev):
              (1, "crypto_bignum_init_set;sae_test_pwd_seed_ecc"),
              (1, "crypto_ec_point_compute_y_sqr;sae_test_pwd_seed_ecc"),
              (1, "crypto_bignum_to_bin;sae_derive_pwe_ecc"),
-             (1, "crypto_ec_point_init;sae_derive_pwe_ecc"),
-             (1, "crypto_ec_point_solve_y_coord;sae_derive_pwe_ecc"),
+             (1, "crypto_ec_point_compute_y_sqr;sae_derive_pwe_ecc"),
              (1, "crypto_ec_point_init;sae_derive_commit_element_ecc"),
              (1, "crypto_ec_point_mul;sae_derive_commit_element_ecc"),
              (1, "crypto_ec_point_invert;sae_derive_commit_element_ecc"),
@@ -2115,9 +2114,13 @@ def start_sae_pwe_ap(apdev, group, sae_pwe):
 def run_sae_pwe_group(dev, apdev, group):
     check_sae_capab(dev[0])
     tls = dev[0].request("GET tls_library")
+    if group == 25 and "run=BoringSSL" in tls:
+        raise HwsimSkip("Group 15 not supported")
     if group in [27, 28, 29, 30]:
-        if tls.startswith("OpenSSL") and "run=OpenSSL 1." in tls:
+        if tls.startswith("OpenSSL") and ("run=OpenSSL 1." in tls or "run=OpenSSL 3." in tls):
             logger.info("Add Brainpool EC groups since OpenSSL is new enough")
+        elif tls.startswith("wolfSSL"):
+            logger.info("Make sure Brainpool EC groups were enabled when compiling wolfSSL")
         else:
             raise HwsimSkip("Brainpool curve not supported")
     start_sae_pwe_ap(apdev[0], group, 2)
@@ -2507,6 +2510,7 @@ def test_sae_okc(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
+    dev[0].flush_scan_cache()
     dev[0].set("sae_groups", "")
     id = dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                         okc=True, scan_freq="2412")
@@ -2539,6 +2543,7 @@ def test_sae_okc_sta_only(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
+    dev[0].flush_scan_cache()
     dev[0].set("sae_groups", "")
     id = dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                         okc=True, scan_freq="2412")
@@ -2566,6 +2571,7 @@ def test_sae_okc_pmk_lifetime(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
+    dev[0].flush_scan_cache()
     dev[0].set("sae_groups", "")
     dev[0].set("dot11RSNAConfigPMKLifetime", "10")
     dev[0].set("dot11RSNAConfigPMKReauthThreshold", "30")
@@ -2588,7 +2594,7 @@ def test_sae_okc_pmk_lifetime(dev, apdev):
         raise Exception("SAE authentication not used during roam to AP2 after reauth threshold")
 
 def test_sae_pmk_lifetime(dev, apdev):
-    """SAE and opportunistic key caching and PMK lifetime"""
+    """SAE and PMK lifetime"""
     check_sae_capab(dev[0])
     params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
@@ -2608,6 +2614,7 @@ def test_sae_pmk_lifetime(dev, apdev):
     hapd2 = hostapd.add_ap(apdev[1], params)
     bssid2 = hapd2.own_addr()
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid2, freq=2412)
     dev[0].roam(bssid2)
     dev[0].dump_monitor()
@@ -2632,19 +2639,8 @@ def test_sae_pmk_lifetime(dev, apdev):
     ev = dev[0].wait_event(["PMKSA-CACHE-REMOVED"], 11)
     if ev is None:
         raise Exception("PMKSA cache entry did not expire")
-    if bssid2 not in ev:
-        ev = dev[0].wait_event(["PMKSA-CACHE-REMOVED"], 11)
-        if ev is None:
-            raise Exception("PMKSA cache entry did not expire")
-        if bssid2 not in ev:
-            raise Exception("PMKSA cache entry for the current AP did not expire")
-    ev = dev[0].wait_event(["CTRL-EVENT-DISCONNECTED"], 1)
-    if ev is None:
-        raise Exception("Disconnection not reported after PMKSA cache entry expiration")
-
-    dev[0].wait_connected()
-    if "sae_group" not in dev[0].get_status():
-        raise Exception("SAE authentication not used after PMKSA cache entry expiration")
+    if bssid2 in ev:
+        raise Exception("Unexpected expiration of the current SAE PMKSA cache entry")
 
 def test_sae_and_psk_multiple_passwords(dev, apdev, params):
     """SAE and PSK with multiple passwords/passphrases"""
@@ -2694,6 +2690,7 @@ def test_sae_pmf_roam(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = hapd.own_addr()
 
+    dev[0].flush_scan_cache()
     dev[0].set("sae_groups", "")
     id = dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                         ieee80211w="2", scan_freq="2412")

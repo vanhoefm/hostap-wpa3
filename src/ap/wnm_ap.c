@@ -409,6 +409,8 @@ static void ieee802_11_rx_bss_trans_mgmt_query(struct hostapd_data *hapd,
 	u8 dialog_token, reason;
 	const u8 *pos, *end;
 	int enabled = hapd->conf->bss_transition;
+	char *hex = NULL;
+	size_t hex_len;
 
 #ifdef CONFIG_MBO
 	if (hapd->conf->mbo_enabled)
@@ -440,6 +442,17 @@ static void ieee802_11_rx_bss_trans_mgmt_query(struct hostapd_data *hapd,
 
 	wpa_hexdump(MSG_DEBUG, "WNM: BSS Transition Candidate List Entries",
 		    pos, end - pos);
+
+	hex_len = 2 * (end - pos) + 1;
+	if (hex_len > 1) {
+		hex = os_malloc(hex_len);
+		if (hex)
+			wpa_snprintf_hex(hex, hex_len, pos, end - pos);
+	}
+	wpa_msg(hapd->msg_ctx, MSG_INFO,
+		BSS_TM_QUERY MACSTR " reason=%u%s%s",
+		MAC2STR(addr), reason, hex ? " neighbor=" : "", hex);
+	os_free(hex);
 
 	ieee802_11_send_bss_trans_mgmt_request(hapd, addr, dialog_token);
 }
@@ -788,8 +801,8 @@ int wnm_send_ess_disassoc_imminent(struct hostapd_data *hapd,
 
 int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 			u8 req_mode, int disassoc_timer, u8 valid_int,
-			const u8 *bss_term_dur, const char *url,
-			const u8 *nei_rep, size_t nei_rep_len,
+			const u8 *bss_term_dur, u8 dialog_token,
+			const char *url, const u8 *nei_rep, size_t nei_rep_len,
 			const u8 *mbo_attrs, size_t mbo_len)
 {
 	u8 *buf, *pos;
@@ -797,8 +810,10 @@ int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 	size_t url_len;
 
 	wpa_printf(MSG_DEBUG, "WNM: Send BSS Transition Management Request to "
-		   MACSTR " req_mode=0x%x disassoc_timer=%d valid_int=0x%x",
-		   MAC2STR(sta->addr), req_mode, disassoc_timer, valid_int);
+		   MACSTR
+		   " req_mode=0x%x disassoc_timer=%d valid_int=0x%x dialog_token=%u",
+		   MAC2STR(sta->addr), req_mode, disassoc_timer, valid_int,
+		   dialog_token);
 	buf = os_zalloc(1000 + nei_rep_len + mbo_len);
 	if (buf == NULL)
 		return -1;
@@ -810,7 +825,7 @@ int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 	os_memcpy(mgmt->bssid, hapd->own_addr, ETH_ALEN);
 	mgmt->u.action.category = WLAN_ACTION_WNM;
 	mgmt->u.action.u.bss_tm_req.action = WNM_BSS_TRANS_MGMT_REQ;
-	mgmt->u.action.u.bss_tm_req.dialog_token = 1;
+	mgmt->u.action.u.bss_tm_req.dialog_token = dialog_token;
 	mgmt->u.action.u.bss_tm_req.req_mode = req_mode;
 	mgmt->u.action.u.bss_tm_req.disassoc_timer =
 		host_to_le16(disassoc_timer);

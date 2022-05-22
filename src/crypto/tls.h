@@ -22,7 +22,8 @@ enum tls_event {
 	TLS_CERT_CHAIN_SUCCESS,
 	TLS_CERT_CHAIN_FAILURE,
 	TLS_PEER_CERTIFICATE,
-	TLS_ALERT
+	TLS_ALERT,
+	TLS_UNSAFE_RENEGOTIATION_DISABLED,
 };
 
 /*
@@ -112,6 +113,7 @@ struct tls_config {
 #define TLS_CONN_ENABLE_TLSv1_1 BIT(15)
 #define TLS_CONN_ENABLE_TLSv1_2 BIT(16)
 #define TLS_CONN_TEAP_ANON_DH BIT(17)
+#define TLS_CONN_ALLOW_UNSAFE_RENEGOTIATION BIT(18)
 
 /**
  * struct tls_connection_params - Parameters for TLS connection
@@ -148,8 +150,6 @@ struct tls_config {
  * @private_key_passwd: Passphrase for decrypted private key, %NULL if no
  * passphrase is used.
  * @dh_file: File name for DH/DSA data in PEM format, or %NULL if not used
- * @dh_blob: dh_file as inlined data or %NULL if not used
- * @dh_blob_len: dh_blob length
  * @engine: 1 = use engine (e.g., a smartcard) for private key operations
  * (this is OpenSSL specific for now)
  * @engine_id: engine id string (this is OpenSSL specific for now)
@@ -198,8 +198,6 @@ struct tls_connection_params {
 	const char *private_key_passwd;
 	const char *private_key_passwd2;
 	const char *dh_file;
-	const u8 *dh_blob;
-	size_t dh_blob_len;
 
 	/* OpenSSL specific variables */
 	int engine;

@@ -454,7 +454,7 @@ class WpaSupplicant:
                   "excluded_ssid", "milenage", "ca_cert", "client_cert",
                   "private_key", "domain_suffix_match", "provisioning_sp",
                   "roaming_partner", "phase1", "phase2", "private_key_passwd",
-                  "roaming_consortiums"]
+                  "roaming_consortiums", "imsi_privacy_key"]
         for field in quoted:
             if field in params:
                 self.set_cred_quoted(id, field, params[field])
@@ -1077,12 +1077,13 @@ class WpaSupplicant:
                   "ca_cert", "client_cert", "private_key",
                   "private_key_passwd", "ca_cert2", "client_cert2",
                   "private_key2", "phase1", "phase2", "domain_suffix_match",
-                  "altsubject_match", "subject_match", "pac_file", "dh_file",
+                  "altsubject_match", "subject_match", "pac_file",
                   "bgscan", "ht_mcs", "id_str", "openssl_ciphers",
                   "domain_match", "dpp_connector", "sae_password",
                   "sae_password_id", "check_cert_subject",
                   "machine_ca_cert", "machine_client_cert",
-                  "machine_private_key", "machine_phase2"]
+                  "machine_private_key", "machine_phase2",
+                  "imsi_identity", "imsi_privacy_key"]
         for field in quoted:
             if field in kwargs and kwargs[field]:
                 self.set_network_quoted(id, field, kwargs[field])
@@ -1113,7 +1114,7 @@ class WpaSupplicant:
                 self.set_network(id, field, kwargs[field])
 
         known_args = {"raw_psk", "password_hex", "peerkey", "okc", "ocsp",
-                      "only_add_network", "wait_connect"}
+                      "only_add_network", "wait_connect", "raw_identity"}
         unknown = set(kwargs.keys())
         unknown -= set(quoted)
         unknown -= set(not_quoted)
@@ -1121,6 +1122,8 @@ class WpaSupplicant:
         if unknown:
             raise Exception("Unknown WpaSupplicant::connect() arguments: " + str(unknown))
 
+        if "raw_identity" in kwargs and kwargs['raw_identity']:
+            self.set_network(id, "identity", kwargs['raw_identity'])
         if "raw_psk" in kwargs and kwargs['raw_psk']:
             self.set_network(id, "psk", kwargs['raw_psk'])
         if "password_hex" in kwargs and kwargs['password_hex']:
@@ -1482,7 +1485,8 @@ class WpaSupplicant:
         return int(res)
 
     def dpp_bootstrap_gen(self, type="qrcode", chan=None, mac=None, info=None,
-                          curve=None, key=None):
+                          curve=None, key=None, supported_curves=None,
+                          host=None):
         cmd = "DPP_BOOTSTRAP_GEN type=" + type
         if chan:
             cmd += " chan=" + chan
@@ -1496,6 +1500,10 @@ class WpaSupplicant:
             cmd += " curve=" + curve
         if key:
             cmd += " key=" + key
+        if supported_curves:
+            cmd += " supported_curves=" + supported_curves
+        if host:
+            cmd += " host=" + host
         res = self.request(cmd)
         if "FAIL" in res:
             raise Exception("Failed to generate bootstrapping info")
@@ -1577,7 +1585,8 @@ class WpaSupplicant:
         return int(peer)
 
     def dpp_pkex_init(self, identifier, code, role=None, key=None, curve=None,
-                      extra=None, use_id=None, allow_fail=False):
+                      extra=None, use_id=None, allow_fail=False, ver=None,
+                      tcp_addr=None, tcp_port=None):
         if use_id is None:
             id1 = self.dpp_bootstrap_gen(type="pkex", key=key, curve=curve)
         else:
@@ -1586,8 +1595,14 @@ class WpaSupplicant:
         if identifier:
             cmd += "identifier=%s " % identifier
         cmd += "init=1 "
+        if ver is not None:
+            cmd += "ver=" + str(ver) + " "
         if role:
             cmd += "role=%s " % role
+        if tcp_addr:
+            cmd += "tcp_addr=" + tcp_addr + " "
+        if tcp_port:
+            cmd += "tcp_port=" + tcp_port + " "
         if extra:
             cmd += extra + " "
         cmd += "code=%s" % code
@@ -1614,16 +1629,27 @@ class WpaSupplicant:
         self.dpp_listen(freq, role=listen_role)
         return id0
 
-    def dpp_configurator_add(self, curve=None, key=None):
+    def dpp_configurator_add(self, curve=None, key=None,
+                             net_access_key_curve=None):
         cmd = "DPP_CONFIGURATOR_ADD"
         if curve:
             cmd += " curve=" + curve
+        if net_access_key_curve:
+            cmd += " net_access_key_curve=" + net_access_key_curve
         if key:
             cmd += " key=" + key
         res = self.request(cmd)
         if "FAIL" in res:
             raise Exception("Failed to add configurator")
         return int(res)
+
+    def dpp_configurator_set(self, conf_id, net_access_key_curve=None):
+        cmd = "DPP_CONFIGURATOR_SET %d" % conf_id
+        if net_access_key_curve:
+            cmd += " net_access_key_curve=" + net_access_key_curve
+        res = self.request(cmd)
+        if "FAIL" in res:
+            raise Exception("Failed to set configurator")
 
     def dpp_configurator_remove(self, conf_id):
         res = self.request("DPP_CONFIGURATOR_REMOVE %d" % conf_id)

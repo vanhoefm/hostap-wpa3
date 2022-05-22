@@ -212,6 +212,7 @@ extern "C" {
 #define DPP_EVENT_BAND_SUPPORT "DPP-BAND-SUPPORT "
 #define DPP_EVENT_CSR "DPP-CSR "
 #define DPP_EVENT_CHIRP_RX "DPP-CHIRP-RX "
+#define DPP_EVENT_CONF_NEEDED "DPP-CONF-NEEDED "
 
 /* MESH events */
 #define MESH_GROUP_STARTED "MESH-GROUP-STARTED "
@@ -361,6 +362,9 @@ extern "C" {
 
 #define P2P_EVENT_LISTEN_OFFLOAD_STOP "P2P-LISTEN-OFFLOAD-STOPPED "
 #define P2P_LISTEN_OFFLOAD_STOP_REASON "P2P-LISTEN-OFFLOAD-STOP-REASON "
+
+/* BSS Transition Management Query frame received */
+#define BSS_TM_QUERY "BSS-TM-QUERY "
 
 /* BSS Transition Management Response frame received */
 #define BSS_TM_RESP "BSS-TM-RESP "

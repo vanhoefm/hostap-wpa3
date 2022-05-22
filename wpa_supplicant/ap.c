@@ -196,6 +196,8 @@ wpa_supplicant_find_hw_mode(struct wpa_supplicant *wpa_s,
 }
 
 
+#ifdef CONFIG_P2P
+
 static int get_max_oper_chwidth_6ghz(int chwidth)
 {
 	switch (chwidth) {
@@ -255,6 +257,8 @@ static void wpas_conf_ap_he_6ghz(struct wpa_supplicant *wpa_s,
 	    get_max_oper_chwidth_6ghz(ssid->max_oper_chwidth) >= 80)
 		wpas_conf_ap_vht(wpa_s, ssid, conf, mode);
 }
+
+#endif /* CONFIG_P2P */
 
 
 int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
@@ -319,7 +323,9 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 
 		if (mode && is_6ghz_freq(ssid->frequency) &&
 		    conf->hw_mode == HOSTAPD_MODE_IEEE80211A) {
+#ifdef CONFIG_P2P
 			wpas_conf_ap_he_6ghz(wpa_s, mode, ssid, conf);
+#endif /* CONFIG_P2P */
 		} else if (!no_ht && mode && mode->ht_capab) {
 			wpa_printf(MSG_DEBUG,
 				   "Enable HT support (p2p_group=%d 11a=%d ht40_hw_capab=%d ssid->ht40=%d)",
@@ -376,7 +382,7 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 					HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET;
 
 			/*
-			 * white-list capabilities that won't cause issues
+			 * include capabilities that won't cause issues
 			 * to connecting stations, while leaving the current
 			 * capabilities intact (currently disabled SMPS).
 			 */
@@ -897,12 +903,18 @@ static void wpas_ap_configured_cb(void *ctx)
 		return;
 	}
 
+	if (wpa_s->current_ssid) {
+		int acs = 0;
+
 #ifdef CONFIG_ACS
-	if (wpa_s->current_ssid && wpa_s->current_ssid->acs) {
-		wpa_s->assoc_freq = wpa_s->ap_iface->freq;
-		wpa_s->current_ssid->frequency = wpa_s->ap_iface->freq;
-	}
+		acs = wpa_s->current_ssid->acs;
 #endif /* CONFIG_ACS */
+		if (acs || (wpa_s->assoc_freq && wpa_s->ap_iface->freq &&
+			    (int) wpa_s->assoc_freq != wpa_s->ap_iface->freq)) {
+			wpa_s->assoc_freq = wpa_s->ap_iface->freq;
+			wpa_s->current_ssid->frequency = wpa_s->ap_iface->freq;
+		}
+	}
 
 	wpa_supplicant_set_state(wpa_s, WPA_COMPLETED);
 
@@ -1016,6 +1028,7 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 	hapd_iface->extended_capa = wpa_s->extended_capa;
 	hapd_iface->extended_capa_mask = wpa_s->extended_capa_mask;
 	hapd_iface->extended_capa_len = wpa_s->extended_capa_len;
+	hapd_iface->drv_max_acl_mac_addrs = wpa_s->drv_max_acl_mac_addrs;
 
 	wpa_s->ap_iface->conf = conf = hostapd_config_defaults();
 	if (conf == NULL) {
@@ -1093,6 +1106,11 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 		hapd_iface->bss[i]->ext_eapol_frame_io =
 			wpa_s->ext_eapol_frame_io;
 #endif /* CONFIG_TESTING_OPTIONS */
+
+#ifdef CONFIG_WNM_AP
+		if (ssid->mode == WPAS_MODE_AP)
+			hapd_iface->bss[i]->conf->bss_transition = 1;
+#endif /* CONFIG_WNM_AP */
 	}
 
 	os_memcpy(hapd_iface->bss[0]->own_addr, wpa_s->own_addr, ETH_ALEN);
@@ -1197,6 +1215,7 @@ void ap_mgmt_rx(void *ctx, struct rx_mgmt *rx_mgmt)
 	struct wpa_supplicant *wpa_s = ctx;
 	struct hostapd_frame_info fi;
 	os_memset(&fi, 0, sizeof(fi));
+	fi.freq = rx_mgmt->freq;
 	fi.datarate = rx_mgmt->datarate;
 	fi.ssi_signal = rx_mgmt->ssi_signal;
 	ieee802_11_mgmt(wpa_s->ap_iface->bss[0], rx_mgmt->frame,
@@ -1215,9 +1234,11 @@ void ap_mgmt_tx_cb(void *ctx, const u8 *buf, size_t len, u16 stype, int ok)
 
 
 void wpa_supplicant_ap_rx_eapol(struct wpa_supplicant *wpa_s,
-				const u8 *src_addr, const u8 *buf, size_t len)
+				const u8 *src_addr, const u8 *buf, size_t len,
+				enum frame_encryption encrypted)
 {
-	ieee802_1x_receive(wpa_s->ap_iface->bss[0], src_addr, buf, len);
+	ieee802_1x_receive(wpa_s->ap_iface->bss[0], src_addr, buf, len,
+			   encrypted);
 }
 
 
@@ -1549,6 +1570,183 @@ int ap_ctrl_iface_wpa_get_status(struct wpa_supplicant *wpa_s, char *buf,
 		return pos - buf;
 	pos += ret;
 	return pos - buf;
+}
+
+
+#ifdef CONFIG_WNM_AP
+
+int ap_ctrl_iface_disassoc_imminent(struct wpa_supplicant *wpa_s,
+				    const char *buf)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+	return hostapd_ctrl_iface_disassoc_imminent(hapd, buf);
+}
+
+
+int ap_ctrl_iface_ess_disassoc(struct wpa_supplicant *wpa_s, const char *buf)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+	return hostapd_ctrl_iface_ess_disassoc(hapd, buf);
+}
+
+
+int ap_ctrl_iface_bss_tm_req(struct wpa_supplicant *wpa_s, const char *buf)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+	return hostapd_ctrl_iface_bss_tm_req(hapd, buf);
+}
+
+#endif /* CONFIG_WNM_AP */
+
+
+int ap_ctrl_iface_acl_add_mac(struct wpa_supplicant *wpa_s,
+			      enum macaddr_acl acl_type,
+			      const char *buf)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	hapd->conf->macaddr_acl = acl_type;
+
+	if (acl_type == ACCEPT_UNLESS_DENIED)
+		return hostapd_ctrl_iface_acl_add_mac(&hapd->conf->deny_mac,
+						      &hapd->conf->num_deny_mac,
+						      buf);
+	if (acl_type == DENY_UNLESS_ACCEPTED)
+		return hostapd_ctrl_iface_acl_add_mac(
+			&hapd->conf->accept_mac,
+			&hapd->conf->num_accept_mac, buf);
+
+	return -1;
+}
+
+
+int ap_ctrl_iface_acl_del_mac(struct wpa_supplicant *wpa_s,
+			      enum macaddr_acl acl_type,
+			      const char *buf)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	hapd->conf->macaddr_acl = acl_type;
+
+	if (acl_type == ACCEPT_UNLESS_DENIED)
+		return hostapd_ctrl_iface_acl_del_mac(&hapd->conf->deny_mac,
+						      &hapd->conf->num_deny_mac,
+						      buf);
+	if (acl_type == DENY_UNLESS_ACCEPTED)
+		return hostapd_ctrl_iface_acl_del_mac(
+			&hapd->conf->accept_mac, &hapd->conf->num_accept_mac,
+			buf);
+
+	return -1;
+}
+
+
+int ap_ctrl_iface_acl_show_mac(struct wpa_supplicant *wpa_s,
+			       enum macaddr_acl acl_type, char *buf,
+			       size_t buflen)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	if (acl_type == ACCEPT_UNLESS_DENIED)
+		return hostapd_ctrl_iface_acl_show_mac(hapd->conf->deny_mac,
+						       hapd->conf->num_deny_mac,
+						       buf, buflen);
+	if (acl_type == DENY_UNLESS_ACCEPTED)
+		return hostapd_ctrl_iface_acl_show_mac(
+			hapd->conf->accept_mac,	hapd->conf->num_accept_mac,
+			buf, buflen);
+
+	return -1;
+}
+
+
+void ap_ctrl_iface_acl_clear_list(struct wpa_supplicant *wpa_s,
+				  enum macaddr_acl acl_type)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return;
+
+	hapd->conf->macaddr_acl = acl_type;
+
+	if (acl_type == ACCEPT_UNLESS_DENIED)
+		hostapd_ctrl_iface_acl_clear_list(&hapd->conf->deny_mac,
+						  &hapd->conf->num_deny_mac);
+	else if (acl_type == DENY_UNLESS_ACCEPTED)
+		hostapd_ctrl_iface_acl_clear_list(&hapd->conf->accept_mac,
+						  &hapd->conf->num_accept_mac);
+}
+
+
+int ap_ctrl_iface_disassoc_deny_mac(struct wpa_supplicant *wpa_s)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	return hostapd_disassoc_deny_mac(hapd);
+}
+
+
+int ap_ctrl_iface_disassoc_accept_mac(struct wpa_supplicant *wpa_s)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	return hostapd_disassoc_accept_mac(hapd);
+}
+
+
+int ap_ctrl_iface_set_acl(struct wpa_supplicant *wpa_s)
+{
+	struct hostapd_data *hapd;
+
+	if (wpa_s->ap_iface)
+		hapd = wpa_s->ap_iface->bss[0];
+	else
+		return -1;
+
+	return hostapd_set_acl(hapd);
 }
 
 #endif /* CONFIG_CTRL_IFACE */

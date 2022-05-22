@@ -13,7 +13,6 @@
 #include "common/ieee802_11_defs.h"
 #include "common/ieee802_11_common.h"
 #include "common/ocv.h"
-#include "common/hw_features_common.h"
 #include "eapol_supp/eapol_supp_sm.h"
 #include "common/wpa_common.h"
 #include "common/sae.h"
@@ -138,6 +137,12 @@ static struct wpabuf * sme_auth_build_sae_commit(struct wpa_supplicant *wpa_s,
 	}
 
 	bss = wpa_bss_get_bssid_latest(wpa_s, bssid);
+	if (!bss) {
+		wpa_printf(MSG_DEBUG,
+			   "SAE: BSS not available, update scan result to get BSS");
+		wpa_supplicant_update_scan_results(wpa_s);
+		bss = wpa_bss_get_bssid_latest(wpa_s, bssid);
+	}
 	if (bss) {
 		const u8 *rsnxe;
 
@@ -941,6 +946,9 @@ static void sme_auth_start_cb(struct wpa_radio_work *work, int deinit)
 	struct wpa_supplicant *wpa_s = work->wpa_s;
 
 	wpa_s->roam_in_progress = false;
+#ifdef CONFIG_WNM
+	wpa_s->bss_trans_mgmt_in_progress = false;
+#endif /* CONFIG_WNM */
 
 	if (deinit) {
 		if (work->started)
@@ -987,6 +995,13 @@ void sme_authenticate(struct wpa_supplicant *wpa_s,
 			"SME: Reject sme_authenticate() in favor of explicit roam request");
 		return;
 	}
+#ifdef CONFIG_WNM
+	if (wpa_s->bss_trans_mgmt_in_progress) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+			"SME: Reject sme_authenticate() in favor of BSS transition management request");
+		return;
+	}
+#endif /* CONFIG_WNM */
 	if (radio_work_pending(wpa_s, "sme-connect")) {
 		/*
 		 * The previous sme-connect work might no longer be valid due to
@@ -1278,21 +1293,24 @@ static int sme_sae_auth(struct wpa_supplicant *wpa_s, u16 auth_transaction,
 		token_len = len - sizeof(le16);
 		h2e = wpa_s->sme.sae.h2e;
 		if (h2e) {
+			u8 id, elen, extid;
+
 			if (token_len < 3) {
 				wpa_dbg(wpa_s, MSG_DEBUG,
 					"SME: Too short SAE anti-clogging token container");
 				return -1;
 			}
-			if (token_pos[0] != WLAN_EID_EXTENSION ||
-			    token_pos[1] == 0 ||
-			    token_pos[1] > token_len - 2 ||
-			    token_pos[2] != WLAN_EID_EXT_ANTI_CLOGGING_TOKEN) {
+			id = *token_pos++;
+			elen = *token_pos++;
+			extid = *token_pos++;
+			if (id != WLAN_EID_EXTENSION ||
+			    elen == 0 || elen > token_len - 2 ||
+			    extid != WLAN_EID_EXT_ANTI_CLOGGING_TOKEN) {
 				wpa_dbg(wpa_s, MSG_DEBUG,
 					"SME: Invalid SAE anti-clogging token container header");
 				return -1;
 			}
-			token_len = token_pos[1] - 1;
-			token_pos += 3;
+			token_len = elen - 1;
 		}
 		wpa_s->sme.sae_token = wpabuf_alloc_copy(token_pos, token_len);
 		wpa_hexdump_buf(MSG_DEBUG, "SME: Requested anti-clogging token",
@@ -1347,7 +1365,7 @@ static int sme_sae_auth(struct wpa_supplicant *wpa_s, u16 auth_transaction,
 			" auth_type=%u auth_transaction=%u status_code=%u",
 			MAC2STR(bssid), WLAN_AUTH_SAE,
 			auth_transaction, status_code);
-		return -1;
+		return -2;
 	}
 
 	if (auth_transaction == 1) {
@@ -1498,7 +1516,10 @@ void sme_external_auth_mgmt_rx(struct wpa_supplicant *wpa_s,
 		if (res < 0) {
 			/* Notify failure to the driver */
 			sme_send_external_auth_status(
-				wpa_s, WLAN_STATUS_UNSPECIFIED_FAILURE);
+				wpa_s,
+				res == -2 ?
+				le_to_host16(header->u.auth.status_code) :
+				WLAN_STATUS_UNSPECIFIED_FAILURE);
 			return;
 		}
 		if (res != 1)
@@ -2380,14 +2401,13 @@ static void sme_send_2040_bss_coex(struct wpa_supplicant *wpa_s,
 }
 
 
-int sme_proc_obss_scan(struct wpa_supplicant *wpa_s,
-		       struct wpa_scan_results *scan_res)
+int sme_proc_obss_scan(struct wpa_supplicant *wpa_s)
 {
+	struct wpa_bss *bss;
 	const u8 *ie;
+	u16 ht_cap;
 	u8 chan_list[P2P_MAX_CHANNELS], channel;
 	u8 num_channels = 0, num_intol = 0, i;
-	size_t j;
-	int pri_freq, sec_freq;
 
 	if (!wpa_s->sme.sched_obss_scan)
 		return 0;
@@ -2415,36 +2435,22 @@ int sme_proc_obss_scan(struct wpa_supplicant *wpa_s,
 
 	os_memset(chan_list, 0, sizeof(chan_list));
 
-	pri_freq = wpa_s->assoc_freq;
-
-	switch (wpa_s->sme.ht_sec_chan) {
-	case HT_SEC_CHAN_ABOVE:
-		sec_freq = pri_freq + 20;
-		break;
-	case HT_SEC_CHAN_BELOW:
-		sec_freq = pri_freq - 20;
-		break;
-	case HT_SEC_CHAN_UNKNOWN:
-	default:
-		wpa_msg(wpa_s, MSG_WARNING,
-			"Undefined secondary channel: drop OBSS scan results");
-		return 1;
-	}
-
-	for (j = 0; j < scan_res->num; j++) {
-		struct wpa_scan_res *bss = scan_res->res[j];
-		enum hostapd_hw_mode mode;
-		int res;
-
+	dl_list_for_each(bss, &wpa_s->bss, struct wpa_bss, list) {
 		/* Skip other band bss */
+		enum hostapd_hw_mode mode;
 		mode = ieee80211_freq_to_chan(bss->freq, &channel);
 		if (mode != HOSTAPD_MODE_IEEE80211G &&
 		    mode != HOSTAPD_MODE_IEEE80211B)
 			continue;
 
-		res = check_bss_coex_40mhz(bss, pri_freq, sec_freq);
-		if (res) {
-			if (res == 2)
+		ie = wpa_bss_get_ie(bss, WLAN_EID_HT_CAP);
+		ht_cap = (ie && (ie[1] == 26)) ? WPA_GET_LE16(ie + 2) : 0;
+		wpa_printf(MSG_DEBUG, "SME OBSS scan BSS " MACSTR
+			   " freq=%u chan=%u ht_cap=0x%x",
+			   MAC2STR(bss->bssid), bss->freq, channel, ht_cap);
+
+		if (!ht_cap || (ht_cap & HT_CAP_INFO_40MHZ_INTOLERANT)) {
+			if (ht_cap & HT_CAP_INFO_40MHZ_INTOLERANT)
 				num_intol++;
 
 			/* Check whether the channel is already considered */
@@ -2582,6 +2588,12 @@ void sme_sched_obss_scan(struct wpa_supplicant *wpa_s, int enable)
 	      (wpa_s->drv_flags & WPA_DRIVER_FLAGS_OBSS_SCAN)) ||
 	    ssid == NULL || ssid->mode != WPAS_MODE_INFRA)
 		return;
+
+#ifdef CONFIG_HT_OVERRIDES
+	/* No need for OBSS scan if HT40 is explicitly disabled */
+	if (ssid->disable_ht40)
+		return;
+#endif /* CONFIG_HT_OVERRIDES */
 
 	if (!wpa_s->hw.modes)
 		return;

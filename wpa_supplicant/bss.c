@@ -291,6 +291,7 @@ static void wpa_bss_copy_res(struct wpa_bss *dst, struct wpa_scan_res *src,
 	dst->noise = src->noise;
 	dst->level = src->level;
 	dst->tsf = src->tsf;
+	dst->beacon_newer = src->beacon_newer;
 	dst->est_throughput = src->est_throughput;
 	dst->snr = src->snr;
 
@@ -1280,12 +1281,16 @@ struct wpabuf * wpa_bss_get_vendor_ie_multi_beacon(const struct wpa_bss *bss,
 	end = pos + bss->beacon_ie_len;
 
 	while (end - pos > 1) {
-		if (2 + pos[1] > end - pos)
+		u8 id, len;
+
+		id = *pos++;
+		len = *pos++;
+		if (len > end - pos)
 			break;
-		if (pos[0] == WLAN_EID_VENDOR_SPECIFIC && pos[1] >= 4 &&
-		    vendor_type == WPA_GET_BE32(&pos[2]))
-			wpabuf_put_data(buf, pos + 2 + 4, pos[1] - 4);
-		pos += 2 + pos[1];
+		if (id == WLAN_EID_VENDOR_SPECIFIC && len >= 4 &&
+		    vendor_type == WPA_GET_BE32(pos))
+			wpabuf_put_data(buf, pos + 4, len - 4);
+		pos += len;
 	}
 
 	if (wpabuf_len(buf) == 0) {

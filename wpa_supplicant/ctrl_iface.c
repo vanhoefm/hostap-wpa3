@@ -674,6 +674,9 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 	} else if (os_strcasecmp(cmd, "dpp_configurator_params") == 0) {
 		os_free(wpa_s->dpp_configurator_params);
 		wpa_s->dpp_configurator_params = os_strdup(value);
+#ifdef CONFIG_DPP2
+		dpp_controller_set_params(wpa_s->dpp, value);
+#endif /* CONFIG_DPP2 */
 	} else if (os_strcasecmp(cmd, "dpp_init_max_tries") == 0) {
 		wpa_s->dpp_init_max_tries = atoi(value);
 	} else if (os_strcasecmp(cmd, "dpp_init_retry_time") == 0) {
@@ -834,6 +837,11 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 		wpa_s->disable_scs_support = !!atoi(value);
 	} else if (os_strcasecmp(cmd, "disable_mscs_support") == 0) {
 		wpa_s->disable_mscs_support = !!atoi(value);
+	} else if (os_strcasecmp(cmd, "disable_eapol_g2_tx") == 0) {
+		wpa_s->disable_eapol_g2_tx = !!atoi(value);
+		/* Populate value to wpa_sm if already associated. */
+		wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_DISABLE_EAPOL_G2_TX,
+				 wpa_s->disable_eapol_g2_tx);
 #ifdef CONFIG_DPP
 	} else if (os_strcasecmp(cmd, "dpp_config_obj_override") == 0) {
 		os_free(wpa_s->dpp_config_obj_override);
@@ -2304,11 +2312,12 @@ static int wpa_supplicant_ctrl_iface_status(struct wpa_supplicant *wpa_s,
 
 		if (wpa_s->connection_set &&
 		    (wpa_s->connection_ht || wpa_s->connection_vht ||
-		     wpa_s->connection_he)) {
+		     wpa_s->connection_he || wpa_s->connection_eht)) {
 			ret = os_snprintf(pos, end - pos,
 					  "wifi_generation=%u\n",
-					  wpa_s->connection_he ? 6 :
-					  (wpa_s->connection_vht ? 5 : 4));
+					  wpa_s->connection_eht ? 7 :
+					  (wpa_s->connection_he ? 6 :
+					   (wpa_s->connection_vht ? 5 : 4)));
 			if (os_snprintf_error(end - pos, ret))
 				return pos - buf;
 			pos += ret;
@@ -3793,47 +3802,6 @@ static int wpa_supplicant_ctrl_iface_add_cred(struct wpa_supplicant *wpa_s,
 }
 
 
-static int wpas_ctrl_remove_cred(struct wpa_supplicant *wpa_s,
-				 struct wpa_cred *cred)
-{
-	struct wpa_ssid *ssid;
-	char str[20];
-	int id;
-
-	if (cred == NULL) {
-		wpa_printf(MSG_DEBUG, "CTRL_IFACE: Could not find cred");
-		return -1;
-	}
-
-	id = cred->id;
-	if (wpa_config_remove_cred(wpa_s->conf, id) < 0) {
-		wpa_printf(MSG_DEBUG, "CTRL_IFACE: Could not find cred");
-		return -1;
-	}
-
-	wpa_msg(wpa_s, MSG_INFO, CRED_REMOVED "%d", id);
-
-	/* Remove any network entry created based on the removed credential */
-	ssid = wpa_s->conf->ssid;
-	while (ssid) {
-		if (ssid->parent_cred == cred) {
-			int res;
-
-			wpa_printf(MSG_DEBUG, "Remove network id %d since it "
-				   "used the removed credential", ssid->id);
-			res = os_snprintf(str, sizeof(str), "%d", ssid->id);
-			if (os_snprintf_error(sizeof(str), res))
-				str[sizeof(str) - 1] = '\0';
-			ssid = ssid->next;
-			wpa_supplicant_ctrl_iface_remove_network(wpa_s, str);
-		} else
-			ssid = ssid->next;
-	}
-
-	return 0;
-}
-
-
 static int wpa_supplicant_ctrl_iface_remove_cred(struct wpa_supplicant *wpa_s,
 						 char *cmd)
 {
@@ -3844,13 +3812,7 @@ static int wpa_supplicant_ctrl_iface_remove_cred(struct wpa_supplicant *wpa_s,
 	 * "provisioning_sp=<FQDN> */
 	if (os_strcmp(cmd, "all") == 0) {
 		wpa_printf(MSG_DEBUG, "CTRL_IFACE: REMOVE_CRED all");
-		cred = wpa_s->conf->cred;
-		while (cred) {
-			prev = cred;
-			cred = cred->next;
-			wpas_ctrl_remove_cred(wpa_s, prev);
-		}
-		return 0;
+		return wpas_remove_all_creds(wpa_s);
 	}
 
 	if (os_strncmp(cmd, "sp_fqdn=", 8) == 0) {
@@ -3866,7 +3828,7 @@ static int wpa_supplicant_ctrl_iface_remove_cred(struct wpa_supplicant *wpa_s,
 					if (os_strcmp(prev->domain[i], cmd + 8)
 					    != 0)
 						continue;
-					wpas_ctrl_remove_cred(wpa_s, prev);
+					wpas_remove_cred(wpa_s, prev);
 					break;
 				}
 			}
@@ -3883,7 +3845,7 @@ static int wpa_supplicant_ctrl_iface_remove_cred(struct wpa_supplicant *wpa_s,
 			cred = cred->next;
 			if (prev->provisioning_sp &&
 			    os_strcmp(prev->provisioning_sp, cmd + 16) == 0)
-				wpas_ctrl_remove_cred(wpa_s, prev);
+				wpas_remove_cred(wpa_s, prev);
 		}
 		return 0;
 	}
@@ -3892,7 +3854,7 @@ static int wpa_supplicant_ctrl_iface_remove_cred(struct wpa_supplicant *wpa_s,
 	wpa_printf(MSG_DEBUG, "CTRL_IFACE: REMOVE_CRED id=%d", id);
 
 	cred = wpa_config_get_cred(wpa_s->conf, id);
-	return wpas_ctrl_remove_cred(wpa_s, cred);
+	return wpas_remove_cred(wpa_s, cred);
 }
 
 
@@ -4826,7 +4788,9 @@ static int wpa_supplicant_ctrl_iface_get_capability(
 
 #ifdef CONFIG_DPP
 	if (os_strcmp(field, "dpp") == 0) {
-#ifdef CONFIG_DPP2
+#ifdef CONFIG_DPP3
+		res = os_snprintf(buf, buflen, "DPP=3");
+#elif defined(CONFIG_DPP2)
 		res = os_snprintf(buf, buflen, "DPP=2");
 #else /* CONFIG_DPP2 */
 		res = os_snprintf(buf, buflen, "DPP=1");
@@ -8477,7 +8441,9 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	dpp_pkex_ephemeral_key_override_len = 0;
 	dpp_protocol_key_override_len = 0;
 	dpp_nonce_override_len = 0;
-#ifdef CONFIG_DPP2
+#ifdef CONFIG_DPP3
+	dpp_version_override = 3;
+#elif defined(CONFIG_DPP2)
 	dpp_version_override = 2;
 #else /* CONFIG_DPP2 */
 	dpp_version_override = 1;
@@ -8580,6 +8546,7 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	wpa_s->oci_freq_override_ft_assoc = 0;
 	wpa_s->oci_freq_override_fils_assoc = 0;
 	wpa_s->oci_freq_override_wnm_sleep = 0;
+	wpa_s->disable_eapol_g2_tx = 0;
 #ifdef CONFIG_DPP
 	os_free(wpa_s->dpp_config_obj_override);
 	wpa_s->dpp_config_obj_override = NULL;
@@ -8633,6 +8600,8 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 
 	if (wpa_s->mac_addr_changed && wpa_s->conf->mac_addr == 0)
 		wpas_restore_permanent_mac_addr(wpa_s);
+
+	wpa_s->conf->ignore_old_scan_res = 0;
 }
 
 
@@ -8869,6 +8838,7 @@ static void wpas_ctrl_scan(struct wpa_supplicant *wpa_s, char *params,
 	unsigned int manual_scan_only_new = 0;
 	unsigned int scan_only = 0;
 	unsigned int scan_id_count = 0;
+	unsigned int manual_non_coloc_6ghz = 0;
 	int scan_id[MAX_SCAN_ID];
 	void (*scan_res_handler)(struct wpa_supplicant *wpa_s,
 				 struct wpa_scan_results *scan_res);
@@ -8946,6 +8916,10 @@ static void wpas_ctrl_scan(struct wpa_supplicant *wpa_s, char *params,
 				os_strstr(params, "wildcard_ssid=1") != NULL;
 		}
 
+		pos = os_strstr(params, "non_coloc_6ghz=");
+		if (pos)
+			manual_non_coloc_6ghz = !!atoi(pos + 15);
+
 		pos = params;
 		while (pos && *pos != '\0') {
 			if (os_strncmp(pos, "ssid ", 5) == 0) {
@@ -9015,6 +8989,7 @@ static void wpas_ctrl_scan(struct wpa_supplicant *wpa_s, char *params,
 		wpa_s->manual_scan_use_id = manual_scan_use_id;
 		wpa_s->manual_scan_only_new = manual_scan_only_new;
 		wpa_s->scan_id_count = scan_id_count;
+		wpa_s->manual_non_coloc_6ghz = manual_non_coloc_6ghz;
 		os_memcpy(wpa_s->scan_id, scan_id, scan_id_count * sizeof(int));
 		wpa_s->scan_res_handler = scan_res_handler;
 		os_free(wpa_s->manual_scan_freqs);
@@ -9038,6 +9013,7 @@ static void wpas_ctrl_scan(struct wpa_supplicant *wpa_s, char *params,
 		wpa_s->manual_scan_use_id = manual_scan_use_id;
 		wpa_s->manual_scan_only_new = manual_scan_only_new;
 		wpa_s->scan_id_count = scan_id_count;
+		wpa_s->manual_non_coloc_6ghz = manual_non_coloc_6ghz;
 		os_memcpy(wpa_s->scan_id, scan_id, scan_id_count * sizeof(int));
 		wpa_s->scan_res_handler = scan_res_handler;
 		os_free(wpa_s->manual_scan_freqs);
@@ -9552,7 +9528,7 @@ static int wpas_ctrl_iface_eapol_rx(struct wpa_supplicant *wpa_s, char *cmd)
 		return -1;
 	}
 
-	wpa_supplicant_rx_eapol(wpa_s, src, buf, len);
+	wpa_supplicant_rx_eapol(wpa_s, src, buf, len, FRAME_ENCRYPTION_UNKNOWN);
 	os_free(buf);
 
 	return 0;
@@ -10025,8 +10001,9 @@ static int wpas_ctrl_iface_send_twt_setup(struct wpa_supplicant *wpa_s,
 	int flow_id = 0;
 	bool protection = false;
 	u8 twt_channel = 0;
-	u8 control = BIT(4); /* Control field (IEEE P802.11ax/D8.0 Figure
-			      * 9-687): B4 = TWT Information Frame Disabled */
+	u8 control = BIT(4); /* Control field (IEEE Std 802.11ax-2021,
+			      * Figure 9-687 - Control field format):
+			      * B4 = TWT Information Frame Disabled */
 	const char *tok_s;
 
 	tok_s = os_strstr(cmd, " dialog=");
@@ -10050,8 +10027,9 @@ static int wpas_ctrl_iface_send_twt_setup(struct wpa_supplicant *wpa_s,
 		setup_cmd = atoi(tok_s + os_strlen(" setup_cmd="));
 
 	tok_s = os_strstr(cmd, " twt=");
-	if (tok_s)
-		sscanf(tok_s + os_strlen(" twt="), "%llu", &twt);
+	if (tok_s &&
+	    sscanf(tok_s + os_strlen(" twt="), "%llu", &twt) != 1)
+		return -1;
 
 	tok_s = os_strstr(cmd, " requestor=");
 	if (tok_s)
@@ -10728,7 +10706,7 @@ fail:
 #endif /* CONFIG_FILS */
 
 
-static int wpas_ctrl_cmd_debug_level(const char *cmd)
+int wpas_ctrl_cmd_debug_level(const char *cmd)
 {
 	if (os_strcmp(cmd, "PING") == 0 ||
 	    os_strncmp(cmd, "BSS ", 4) == 0 ||
@@ -12060,6 +12038,58 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strcmp(buf, "UPDATE_BEACON") == 0) {
 		if (wpas_ap_update_beacon(wpa_s))
 			reply_len = -1;
+	} else if (os_strncmp(buf, "ACCEPT_ACL ", 11) == 0) {
+		if (os_strncmp(buf + 11, "ADD_MAC ", 8) == 0) {
+			if (ap_ctrl_iface_acl_add_mac(wpa_s,
+						      DENY_UNLESS_ACCEPTED,
+						      buf + 19) ||
+			    ap_ctrl_iface_set_acl(wpa_s))
+				reply_len = -1;
+		} else if (os_strncmp((buf + 11), "DEL_MAC ", 8) == 0) {
+			if (ap_ctrl_iface_acl_del_mac(wpa_s,
+						      DENY_UNLESS_ACCEPTED,
+						      buf + 19) ||
+			    ap_ctrl_iface_set_acl(wpa_s) ||
+			    ap_ctrl_iface_disassoc_accept_mac(wpa_s))
+				reply_len = -1;
+		} else if (os_strcmp(buf + 11, "SHOW") == 0) {
+			reply_len = ap_ctrl_iface_acl_show_mac(
+				wpa_s, DENY_UNLESS_ACCEPTED,
+				reply, reply_size);
+		} else if (os_strcmp(buf + 11, "CLEAR") == 0) {
+			ap_ctrl_iface_acl_clear_list(wpa_s,
+						     DENY_UNLESS_ACCEPTED);
+			if (ap_ctrl_iface_set_acl(wpa_s) ||
+			    ap_ctrl_iface_disassoc_accept_mac(wpa_s))
+				reply_len = -1;
+		} else {
+			reply_len = -1;
+		}
+	} else if (os_strncmp(buf, "DENY_ACL ", 9) == 0) {
+		if (os_strncmp(buf + 9, "ADD_MAC ", 8) == 0) {
+			if (ap_ctrl_iface_acl_add_mac(wpa_s,
+						      ACCEPT_UNLESS_DENIED,
+						      buf + 17) ||
+			    ap_ctrl_iface_set_acl(wpa_s) ||
+			    ap_ctrl_iface_disassoc_deny_mac(wpa_s))
+				reply_len = -1;
+		} else if (os_strncmp(buf + 9, "DEL_MAC ", 8) == 0) {
+			if (ap_ctrl_iface_acl_del_mac(wpa_s,
+						      ACCEPT_UNLESS_DENIED,
+						      buf + 17) ||
+			    ap_ctrl_iface_set_acl(wpa_s))
+				reply_len = -1;
+		} else if (os_strcmp(buf + 9, "SHOW") == 0) {
+			reply_len = ap_ctrl_iface_acl_show_mac(
+				wpa_s, ACCEPT_UNLESS_DENIED, reply, reply_size);
+		} else if (os_strcmp(buf + 9, "CLEAR") == 0) {
+			ap_ctrl_iface_acl_clear_list(wpa_s,
+						     ACCEPT_UNLESS_DENIED);
+			if (ap_ctrl_iface_set_acl(wpa_s))
+				reply_len = -1;
+		} else {
+			reply_len = -1;
+		}
 #endif /* CONFIG_AP */
 	} else if (os_strcmp(buf, "SUSPEND") == 0) {
 		wpas_notify_suspend(wpa_s->global);
@@ -12155,6 +12185,17 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		if (wpas_ctrl_iface_coloc_intf_report(wpa_s, buf + 18))
 			reply_len = -1;
 #endif /* CONFIG_WNM */
+#ifdef CONFIG_WNM_AP
+	} else if (os_strncmp(buf, "DISASSOC_IMMINENT ", 18) == 0) {
+		if (ap_ctrl_iface_disassoc_imminent(wpa_s, buf + 18))
+			reply_len = -1;
+	} else if (os_strncmp(buf, "ESS_DISASSOC ", 13) == 0) {
+		if (ap_ctrl_iface_ess_disassoc(wpa_s, buf + 13))
+			reply_len = -1;
+	} else if (os_strncmp(buf, "BSS_TM_REQ ", 11) == 0) {
+		if (ap_ctrl_iface_bss_tm_req(wpa_s, buf + 11))
+			reply_len = -1;
+#endif /* CONFIG_WNM_AP */
 	} else if (os_strcmp(buf, "FLUSH") == 0) {
 		wpa_supplicant_ctrl_iface_flush(wpa_s);
 	} else if (os_strncmp(buf, "RADIO_WORK ", 11) == 0) {
@@ -12353,6 +12394,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 			if (os_snprintf_error(reply_size, reply_len))
 				reply_len = -1;
 		}
+	} else if (os_strncmp(buf, "DPP_CONFIGURATOR_SET ", 21) == 0) {
+		if (dpp_configurator_set(wpa_s->dpp, buf + 20) < 0)
+			reply_len = -1;
 	} else if (os_strncmp(buf, "DPP_CONFIGURATOR_REMOVE ", 24) == 0) {
 		if (dpp_configurator_remove(wpa_s->dpp, buf + 24) < 0)
 			reply_len = -1;
@@ -12376,6 +12420,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		}
 	} else if (os_strncmp(buf, "DPP_PKEX_REMOVE ", 16) == 0) {
 		if (wpas_dpp_pkex_remove(wpa_s, buf + 16) < 0)
+			reply_len = -1;
+	} else if (os_strncmp(buf, "DPP_CONF_SET ", 13) == 0) {
+		if (wpas_dpp_conf_set(wpa_s, buf + 12) < 0)
 			reply_len = -1;
 #ifdef CONFIG_DPP2
 	} else if (os_strncmp(buf, "DPP_CONTROLLER_START ", 21) == 0) {

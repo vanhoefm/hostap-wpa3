@@ -114,6 +114,8 @@ def test_dbus_getall(dev, apdev):
     """D-Bus GetAll"""
     (bus, wpas_obj, path, if_obj) = prepare_dbus(dev[0])
 
+    dev[0].flush_scan_cache()
+
     props = wpas_obj.GetAll(WPAS_DBUS_SERVICE,
                             dbus_interface=dbus.PROPERTIES_IFACE)
     logger.debug("GetAll(fi.w1.wpa.supplicant1, /fi/w1/wpa_supplicant1) ==> " + str(props))
@@ -145,8 +147,10 @@ def test_dbus_getall(dev, apdev):
 
     res = if_obj.Get(WPAS_DBUS_IFACE, 'BSSs',
                      dbus_interface=dbus.PROPERTIES_IFACE)
-    if len(res) != 1:
+    if len(res) < 1:
         raise Exception("Missing BSSs entry: " + str(res))
+    if len(res) > 1:
+        raise Exception("Too manu BSSs entries: " + str(res))
     bss_obj = bus.get_object(WPAS_DBUS_SERVICE, res[0])
     props = bss_obj.GetAll(WPAS_DBUS_BSS, dbus_interface=dbus.PROPERTIES_IFACE)
     logger.debug("GetAll(%s, %s): %s" % (WPAS_DBUS_BSS, res[0], str(props)))
@@ -621,6 +625,7 @@ def _test_dbus_wps_pbc(dev, apdev):
     hapd = start_ap(apdev[0])
     hapd.request("WPS_PBC")
     bssid = apdev[0]['bssid']
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412")
     dev[0].request("SET wps_cred_processing 2")
 
@@ -6089,5 +6094,116 @@ def test_dbus_roam(dev, apdev):
             return self.state == 2
 
     with TestDbusConnect(bus) as t:
+        if not t.success():
+            raise Exception("Expected signals not seen")
+
+def test_dbus_creds(dev, apdev):
+    "D-Bus interworking credentials"
+    (bus, wpas_obj, path, if_obj) = prepare_dbus(dev[0])
+    iface = dbus.Interface(if_obj, WPAS_DBUS_IFACE)
+
+    args = {'domain': 'server.w1.fi',
+            'realm': 'server.w1.fi',
+            'roaming_consortium': '50a9bf',
+            'required_roaming_consortium': '23bf50',
+            'eap': 'TTLS',
+            'phase2': 'auth=MSCHAPV2',
+            'username': 'user',
+            'password': 'password',
+            'domain_suffix_match': 'server.w1.fi',
+            'ca_cert': 'auth_serv/ca.pem'}
+
+    path = iface.AddCred(dbus.Dictionary(args, signature='sv'))
+    for k, v in args.items():
+        if k == 'password':
+            continue
+        prop = dev[0].get_cred(0, k)
+        if prop != v:
+            raise Exception('Credential add failed: %s does not match %s' % (prop, v))
+
+    iface.RemoveCred(path)
+    if not "FAIL" in dev[0].get_cred(0, 'domain'):
+        raise Exception("Credential remove failed")
+
+    # Removal of multiple credentials
+    cred1 = {'domain': 'server1.w1.fi','realm': 'server1.w1.fi','eap': 'TTLS'}
+    iface.AddCred(dbus.Dictionary(cred1, signature='sv'))
+    if "FAIL" in dev[0].get_cred(0, 'domain'):
+        raise Exception("Failed to add credential")
+
+    cred2 = {'domain': 'server2.w1.fi','realm': 'server2.w1.fi','eap': 'TTLS'}
+    iface.AddCred(dbus.Dictionary(cred2, signature='sv'))
+    if "FAIL" in dev[0].get_cred(1, 'domain'):
+        raise Exception("Failed to add credential")
+
+    iface.RemoveAllCreds()
+    if not "FAIL" in dev[0].get_cred(0, 'domain'):
+        raise Exception("Credential remove failed")
+    if not "FAIL" in dev[0].get_cred(1, 'domain'):
+        raise Exception("Credential remove failed")
+
+def test_dbus_interworking(dev, apdev):
+    "D-Bus interworking selection"
+    (bus, wpas_obj, path, if_obj) = prepare_dbus(dev[0])
+    iface = dbus.Interface(if_obj, WPAS_DBUS_IFACE)
+
+    params = {"ssid": "test-interworking", "wpa": "2",
+              "wpa_key_mgmt": "WPA-EAP", "rsn_pairwise": "CCMP",
+              "ieee8021x": "1", "eapol_version": "2",
+              "eap_server": "1", "eap_user_file": "auth_serv/eap_user.conf",
+              "ca_cert": "auth_serv/ca.pem",
+              "server_cert": "auth_serv/server.pem",
+              "private_key": "auth_serv/server.key",
+              "interworking": "1",
+              "domain_name": "server.w1.fi",
+              "nai_realm": "0,server.w1.fi,21[2:4][5:7]",
+              "roaming_consortium": "2233445566",
+              "hs20": "1", "anqp_domain_id": "1234"}
+
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    class TestDbusInterworking(TestDbus):
+        def __init__(self, bus):
+            TestDbus.__init__(self, bus)
+            self.interworking_ap_seen = False
+            self.interworking_select_done = False
+
+        def __enter__(self):
+            gobject.timeout_add(1, self.run_select)
+            gobject.timeout_add(15000, self.timeout)
+            self.add_signal(self.interworkingAPAdded, WPAS_DBUS_IFACE,
+                            "InterworkingAPAdded")
+            self.add_signal(self.interworkingSelectDone, WPAS_DBUS_IFACE,
+                            "InterworkingSelectDone")
+            self.loop.run()
+            return self
+
+        def interworkingAPAdded(self, bss, cred, properties):
+            logger.debug("interworkingAPAdded: bss=%s cred=%s %s" % (bss, cred, str(properties)))
+            if self.cred == cred:
+                self.interworking_ap_seen = True
+
+        def interworkingSelectDone(self):
+            logger.debug("interworkingSelectDone")
+            self.interworking_select_done = True
+            self.loop.quit()
+
+        def run_select(self, *args):
+            args = {"domain": "server.w1.fi",
+                    "realm": "server.w1.fi",
+                    "eap": "TTLS",
+                    "phase2": "auth=MSCHAPV2",
+                    "username": "user",
+                    "password": "password",
+                    "domain_suffix_match": "server.w1.fi",
+                    "ca_cert": "auth_serv/ca.pem"}
+            self.cred = iface.AddCred(dbus.Dictionary(args, signature='sv'))
+            iface.InterworkingSelect()
+            return False
+
+        def success(self):
+            return self.interworking_ap_seen and self.interworking_select_done
+
+    with TestDbusInterworking(bus) as t:
         if not t.success():
             raise Exception("Expected signals not seen")

@@ -1,6 +1,6 @@
 /*
  * WPA Supplicant - command line interface for wpa_supplicant daemon
- * Copyright (c) 2004-2019, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -29,7 +29,7 @@
 
 static const char *const wpa_cli_version =
 "wpa_cli v" VERSION_STR "\n"
-"Copyright (c) 2004-2019, Jouni Malinen <j@w1.fi> and contributors";
+"Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi> and contributors";
 
 #define VENDOR_ELEM_FRAME_ID \
 	"  0: Probe Req (P2P), 1: Probe Resp (P2P) , 2: Probe Resp (GO), " \
@@ -1418,11 +1418,11 @@ static const char *network_fields[] = {
 #ifdef IEEE8021X_EAPOL
 	"eap", "identity", "anonymous_identity", "password", "ca_cert",
 	"ca_path", "client_cert", "private_key", "private_key_passwd",
-	"dh_file", "subject_match", "altsubject_match",
+	"subject_match", "altsubject_match",
 	"check_cert_subject",
 	"domain_suffix_match", "domain_match", "ca_cert2", "ca_path2",
 	"client_cert2", "private_key2", "private_key2_passwd",
-	"dh_file2", "subject_match2", "altsubject_match2",
+	"subject_match2", "altsubject_match2",
 	"check_cert_subject2",
 	"domain_suffix_match2", "domain_match2", "phase1", "phase2",
 	"pcsc", "pin", "engine_id", "key_id", "cert_id", "ca_cert_id",
@@ -1591,6 +1591,7 @@ static const char * const cred_fields[] = {
 	"min_dl_bandwidth_roaming", "min_ul_bandwidth_roaming", "max_bss_load",
 	"req_conn_capab", "ocsp", "sim_num", "realm", "username", "password",
 	"ca_cert", "client_cert", "private_key", "private_key_passwd", "imsi",
+	"ca_cert_id", "cert_id", "key_id", "engine_id", "engine",
 	"milenage", "domain_suffix_match", "domain", "phase1", "phase2",
 	"roaming_consortium", "required_roaming_consortium", "excluded_ssid",
 	"roaming_partner", "provisioning_sp"
@@ -2043,6 +2044,20 @@ static int wpa_cli_cmd_update_beacon(struct wpa_ctrl *ctrl, int argc,
 				     char *argv[])
 {
 	return wpa_ctrl_command(ctrl, "UPDATE_BEACON");
+}
+
+
+static int wpa_cli_cmd_accept_macacl(struct wpa_ctrl *ctrl, int argc,
+				     char *argv[])
+{
+	return wpa_cli_cmd(ctrl, "ACCEPT_ACL", 1, argc, argv);
+}
+
+
+static int wpa_cli_cmd_deny_macacl(struct wpa_ctrl *ctrl, int argc,
+				   char *argv[])
+{
+	return wpa_cli_cmd(ctrl, "DENY_ACL", 1, argc, argv);
 }
 
 #endif /* CONFIG_AP */
@@ -2893,6 +2908,31 @@ static int wpa_cli_cmd_wnm_bss_query(struct wpa_ctrl *ctrl, int argc, char *argv
 #endif /* CONFIG_WNM */
 
 
+#ifdef CONFIG_WNM_AP
+
+static int wpa_cli_cmd_disassoc_imminent(struct wpa_ctrl *ctrl, int argc,
+					 char *argv[])
+{
+	return wpa_cli_cmd(ctrl, "DISASSOC_IMMINENT", 2, argc, argv);
+}
+
+
+static int wpa_cli_cmd_ess_disassoc(struct wpa_ctrl *ctrl, int argc,
+				    char *argv[])
+{
+	return wpa_cli_cmd(ctrl, "ESS_DISASSOC", 3, argc, argv);
+}
+
+
+static int wpa_cli_cmd_bss_tm_req(struct wpa_ctrl *ctrl, int argc,
+				  char *argv[])
+{
+	return wpa_cli_cmd(ctrl, "BSS_TM_REQ", 1, argc, argv);
+}
+
+#endif /* CONFIG_WNM_AP */
+
+
 static int wpa_cli_cmd_raw(struct wpa_ctrl *ctrl, int argc, char *argv[])
 {
 	if (argc == 0)
@@ -3598,6 +3638,10 @@ static const struct wpa_cli_cmd wpa_cli_commands[] = {
 	{ "update_beacon", wpa_cli_cmd_update_beacon, NULL,
 	  cli_cmd_flag_none,
 	  "= update Beacon frame contents"},
+	{ "accept_acl", wpa_cli_cmd_accept_macacl, NULL, cli_cmd_flag_none,
+	  "=Add/Delete/Show/Clear allow MAC ACL" },
+	{ "deny_acl", wpa_cli_cmd_deny_macacl, NULL, cli_cmd_flag_none,
+	  "=Add/Delete/Show/Clear deny MAC ACL" },
 #endif /* CONFIG_AP */
 	{ "suspend", wpa_cli_cmd_suspend, NULL, cli_cmd_flag_none,
 	  "= notification of suspend/hibernate" },
@@ -3844,6 +3888,14 @@ static const struct wpa_cli_cmd wpa_cli_commands[] = {
 	  " [neighbor=<BSSID>,<BSSID information>,<operating class>,<channel number>,<PHY type>[,<hexdump of optional subelements>]"
 	  " = Send BSS Transition Management Query" },
 #endif /* CONFIG_WNM */
+#ifdef CONFIG_WNM_AP
+	{ "disassoc_imminent", wpa_cli_cmd_disassoc_imminent, NULL, cli_cmd_flag_none,
+	  "= send Disassociation Imminent notification" },
+	{ "ess_disassoc", wpa_cli_cmd_ess_disassoc, NULL, cli_cmd_flag_none,
+	  "= send ESS Dissassociation Imminent notification" },
+	{ "bss_tm_req", wpa_cli_cmd_bss_tm_req, NULL, cli_cmd_flag_none,
+	  "= send BSS Transition Management Request" },
+#endif /* CONFIG_WNM_AP */
 	{ "raw", wpa_cli_cmd_raw, NULL, cli_cmd_flag_sensitive,
 	  "<params..> = Sent unprocessed command" },
 	{ "flush", wpa_cli_cmd_flush, NULL, cli_cmd_flag_none,

@@ -549,6 +549,11 @@ struct wpa_ssid {
 	int dot11MeshConfirmTimeout; /* msec */
 	int dot11MeshHoldingTimeout; /* msec */
 
+	/**
+	 * Mesh network layer-2 forwarding (dot11MeshForwarding)
+	 */
+	int mesh_fwding;
+
 	int ht;
 	int ht40;
 
@@ -905,6 +910,13 @@ struct wpa_ssid {
 	 * Range: 0-255 (default: 255)
 	 */
 	int mka_priority;
+
+	/**
+	 * macsec_csindex - Cipher suite index for MACsec
+	 *
+	 * Range: 0-1 (default: 0)
+	 */
+	int macsec_csindex;
 
 	/**
 	 * mka_ckn - MKA pre-shared CKN

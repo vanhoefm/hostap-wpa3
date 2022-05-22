@@ -261,12 +261,7 @@ int hostapd_notif_assoc(struct hostapd_data *hapd, const u8 *addr,
 	}
 #endif /* NEED_AP_MLME */
 
-#ifdef CONFIG_INTERWORKING
-	if (elems.ext_capab && elems.ext_capab_len > 4) {
-		if (elems.ext_capab[4] & 0x01)
-			sta->qos_map_enabled = 1;
-	}
-#endif /* CONFIG_INTERWORKING */
+	check_ext_capab(hapd, sta, elems.ext_capab, elems.ext_capab_len);
 
 #ifdef CONFIG_HS20
 	wpabuf_free(sta->hs20_ie);
@@ -344,6 +339,16 @@ int hostapd_notif_assoc(struct hostapd_data *hapd, const u8 *addr,
 			goto skip_wpa_check;
 		}
 #endif /* CONFIG_WPS */
+
+		if (check_sa_query_need(hapd, sta)) {
+			status = WLAN_STATUS_ASSOC_REJECTED_TEMPORARILY;
+
+			p = hostapd_eid_assoc_comeback_time(hapd, sta, p);
+
+			hostapd_sta_assoc(hapd, addr, reassoc, status, buf,
+					  p - buf);
+			return 0;
+		}
 
 		if (sta->wpa_sm == NULL)
 			sta->wpa_sm = wpa_auth_sta_init(hapd->wpa_auth,
@@ -423,16 +428,6 @@ int hostapd_notif_assoc(struct hostapd_data *hapd, const u8 *addr,
 				   res);
 			wpa_hexdump(MSG_DEBUG, "IE", ie, ielen);
 			goto fail;
-		}
-
-		if (check_sa_query_need(hapd, sta)) {
-			status = WLAN_STATUS_ASSOC_REJECTED_TEMPORARILY;
-
-			p = hostapd_eid_assoc_comeback_time(hapd, sta, p);
-
-			hostapd_sta_assoc(hapd, addr, reassoc, status, buf,
-					  p - buf);
-			return 0;
 		}
 
 		if (wpa_auth_uses_mfp(sta->wpa_sm))
@@ -870,10 +865,11 @@ void hostapd_event_ch_switch(struct hostapd_data *hapd, int freq, int ht,
 
 	hostapd_logger(hapd, NULL, HOSTAPD_MODULE_IEEE80211,
 		       HOSTAPD_LEVEL_INFO,
-		       "driver %s channel switch: freq=%d, ht=%d, vht_ch=0x%x, he_ch=0x%x, offset=%d, width=%d (%s), cf1=%d, cf2=%d",
+		       "driver %s channel switch: freq=%d, ht=%d, vht_ch=0x%x, he_ch=0x%x, eht_ch=0x%x, offset=%d, width=%d (%s), cf1=%d, cf2=%d",
 		       finished ? "had" : "starting",
 		       freq, ht, hapd->iconf->ch_switch_vht_config,
-		       hapd->iconf->ch_switch_he_config, offset,
+		       hapd->iconf->ch_switch_he_config,
+		       hapd->iconf->ch_switch_eht_config, offset,
 		       width, channel_width_to_string(width), cf1, cf2);
 
 	if (!hapd->iface->current_mode) {
@@ -953,9 +949,29 @@ void hostapd_event_ch_switch(struct hostapd_data *hapd, int freq, int ht,
 		else if (hapd->iconf->ch_switch_he_config &
 			 CH_SWITCH_HE_DISABLED)
 			hapd->iconf->ieee80211ax = 0;
+#ifdef CONFIG_IEEE80211BE
+	} else if (hapd->iconf->ch_switch_eht_config) {
+		/* CHAN_SWITCH EHT config */
+		if (hapd->iconf->ch_switch_eht_config &
+		    CH_SWITCH_EHT_ENABLED) {
+			hapd->iconf->ieee80211be = 1;
+			hapd->iconf->ieee80211ax = 1;
+			if (!is_6ghz_freq(hapd->iface->freq))
+				hapd->iconf->ieee80211ac = 1;
+		} else if (hapd->iconf->ch_switch_eht_config &
+			   CH_SWITCH_EHT_DISABLED)
+			hapd->iconf->ieee80211be = 0;
+#endif /* CONFIG_IEEE80211BE */
 	}
 	hapd->iconf->ch_switch_vht_config = 0;
 	hapd->iconf->ch_switch_he_config = 0;
+	hapd->iconf->ch_switch_eht_config = 0;
+
+	if (width == CHAN_WIDTH_40 || width == CHAN_WIDTH_80 ||
+	    width == CHAN_WIDTH_80P80 || width == CHAN_WIDTH_160)
+		hapd->iconf->ht_capab |= HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET;
+	else if (width == CHAN_WIDTH_20 || width == CHAN_WIDTH_20_NOHT)
+		hapd->iconf->ht_capab &= ~HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET;
 
 	hapd->iconf->secondary_channel = offset;
 	hostapd_set_oper_chwidth(hapd->iconf, chwidth);
@@ -1005,7 +1021,9 @@ void hostapd_event_ch_switch(struct hostapd_data *hapd, int freq, int ht,
 		hostapd_neighbor_set_own_report(hapd->iface->bss[i]);
 
 #ifdef CONFIG_OCV
-	if (hapd->conf->ocv) {
+	if (hapd->conf->ocv &&
+	    !(hapd->iface->drv_flags2 &
+	      WPA_DRIVER_FLAGS2_SA_QUERY_OFFLOAD_AP)) {
 		struct sta_info *sta;
 		bool check_sa_query = false;
 
@@ -1525,7 +1543,8 @@ static int hostapd_event_new_sta(struct hostapd_data *hapd, const u8 *addr)
 
 
 static void hostapd_event_eapol_rx(struct hostapd_data *hapd, const u8 *src,
-				   const u8 *data, size_t data_len)
+				   const u8 *data, size_t data_len,
+				   enum frame_encryption encrypted)
 {
 	struct hostapd_iface *iface = hapd->iface;
 	struct sta_info *sta;
@@ -1539,7 +1558,7 @@ static void hostapd_event_eapol_rx(struct hostapd_data *hapd, const u8 *src,
 		}
 	}
 
-	ieee802_1x_receive(hapd, src, data, data_len);
+	ieee802_1x_receive(hapd, src, data, data_len, encrypted);
 }
 
 #endif /* HOSTAPD */
@@ -1931,7 +1950,8 @@ void wpa_supplicant_event(void *ctx, enum wpa_event_type event,
 	case EVENT_EAPOL_RX:
 		hostapd_event_eapol_rx(hapd, data->eapol_rx.src,
 				       data->eapol_rx.data,
-				       data->eapol_rx.data_len);
+				       data->eapol_rx.data_len,
+				       data->eapol_rx.encrypted);
 		break;
 	case EVENT_ASSOC:
 		if (!data)
@@ -2075,6 +2095,32 @@ void wpa_supplicant_event(void *ctx, enum wpa_event_type event,
 			data->wds_sta_interface.ifname,
 			data->wds_sta_interface.sta_addr);
 		break;
+#ifdef CONFIG_IEEE80211AX
+	case EVENT_BSS_COLOR_COLLISION:
+		/* The BSS color is shared amongst all BBSs on a specific phy.
+		 * Therefore we always start the color change on the primary
+		 * BSS. */
+		wpa_printf(MSG_DEBUG, "BSS color collision on %s",
+			   hapd->conf->iface);
+		hostapd_switch_color(hapd->iface->bss[0],
+				     data->bss_color_collision.bitmap);
+		break;
+	case EVENT_CCA_STARTED_NOTIFY:
+		wpa_printf(MSG_DEBUG, "CCA started on on %s",
+			   hapd->conf->iface);
+		break;
+	case EVENT_CCA_ABORTED_NOTIFY:
+		wpa_printf(MSG_DEBUG, "CCA aborted on on %s",
+			   hapd->conf->iface);
+		hostapd_cleanup_cca_params(hapd);
+		break;
+	case EVENT_CCA_NOTIFY:
+		wpa_printf(MSG_DEBUG, "CCA finished on on %s",
+			   hapd->conf->iface);
+		hapd->iface->conf->he_op.he_bss_color = hapd->cca_color;
+		hostapd_cleanup_cca_params(hapd);
+		break;
+#endif /* CONFIG_IEEE80211AX */
 	default:
 		wpa_printf(MSG_DEBUG, "Unknown event %d", event);
 		break;

@@ -15,7 +15,13 @@ export LOGDIR
 if [ -z "$DBFILE" ]; then
     DB=""
 else
-    DB="-S $DBFILE --commit $(git rev-parse HEAD)"
+    DB="-S $DBFILE"
+    if [ -z "$COMMITID" ]; then
+	COMMITID="$(git rev-parse HEAD)"
+    fi
+    if [ -n "$COMMITID" ]; then
+	DB="$DB --commit $COMMITID"
+    fi
     if [ -n "$BUILD" ]; then
 	DB="$DB -b $BUILD"
     fi

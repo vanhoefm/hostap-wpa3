@@ -37,6 +37,13 @@ EPATH=$(sed 's/.*EPATH=\([^ ]*\) .*/\1/' /proc/cmdline)
 TELNET=$(sed 's/.*TELNET=\([^ ]*\) .*/\1/' /proc/cmdline)
 ARGS=$(sed 's/.*ARGS=\([^ ]*\)\( \|$\).*/\1/' /proc/cmdline)
 LOGDIR=$(sed 's/.*LOGDIR=\([^ ]*\)\( \|$\).*/\1/' /proc/cmdline)
+if grep -q "commitid=" /proc/cmdline; then
+    COMMITID=$(sed 's/.*commitid=\([^ ]*\)\( \|$\).*/\1/' /proc/cmdline)
+else
+    COMMITID=
+fi
+
+mount --bind "$TESTDIR/vm/regdb/" /lib/firmware
 
 # create /dev entries we need
 mknod -m 660 /dev/ttyS0 c 4 64
@@ -50,6 +57,11 @@ test -f /sys/class/misc/rfkill/dev && \
 ln -s /proc/self/fd/0 /dev/stdin
 ln -s /proc/self/fd/1 /dev/stdout
 ln -s /proc/self/fd/2 /dev/stderr
+
+# pretend we've initialized the RNG, we don't care here
+# about the actual quality of the randomness. The ioctl
+# is RNDADDTOENTCNT (at least on x86).
+PYTHONHASHSEED=0 python3 -c 'import fcntl; fd=open("/dev/random", "w"); fcntl.ioctl(fd.fileno(), 0x40045201, b"\x00\x01\x00\x00")'
 
 echo "VM has started up" > /dev/ttyS0
 
@@ -144,6 +156,7 @@ else
 	export LOGDIR=/tmp/logs
 	export DBFILE=$LOGDIR/results.db
 	export PREFILL_DB=y
+	export COMMITID
 
 	# some tests need CRDA, install a simple uevent helper
 	# and preload the 00 domain it will have asked for already

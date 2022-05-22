@@ -540,10 +540,17 @@ static void acs_survey_mode_interference_factor(
 		if (!acs_usable_chan(chan))
 			continue;
 
+		if ((chan->flag & HOSTAPD_CHAN_RADAR) &&
+		    iface->conf->acs_exclude_dfs)
+			continue;
+
 		if (!is_in_chanlist(iface, chan))
 			continue;
 
 		if (!is_in_freqlist(iface, chan))
+			continue;
+
+		if (chan->max_tx_power < iface->conf->min_tx_power)
 			continue;
 
 		wpa_printf(MSG_DEBUG, "ACS: Survey analysis for channel %d (%d MHz)",
@@ -667,10 +674,17 @@ acs_find_ideal_chan_mode(struct hostapd_iface *iface,
 		if (!chan_pri_allowed(chan))
 			continue;
 
+		if ((chan->flag & HOSTAPD_CHAN_RADAR) &&
+		    iface->conf->acs_exclude_dfs)
+			continue;
+
 		if (!is_in_chanlist(iface, chan))
 			continue;
 
 		if (!is_in_freqlist(iface, chan))
+			continue;
+
+		if (chan->max_tx_power < iface->conf->min_tx_power)
 			continue;
 
 		if (!chan_bw_allowed(chan, bw, 1, 1)) {
@@ -1038,13 +1052,18 @@ static int * acs_request_scan_add_freqs(struct hostapd_iface *iface,
 
 	for (i = 0; i < mode->num_channels; i++) {
 		chan = &mode->channels[i];
-		if (chan->flag & HOSTAPD_CHAN_DISABLED)
+		if ((chan->flag & HOSTAPD_CHAN_DISABLED) ||
+		    ((chan->flag & HOSTAPD_CHAN_RADAR) &&
+		     iface->conf->acs_exclude_dfs))
 			continue;
 
 		if (!is_in_chanlist(iface, chan))
 			continue;
 
 		if (!is_in_freqlist(iface, chan))
+			continue;
+
+		if (chan->max_tx_power < iface->conf->min_tx_power)
 			continue;
 
 		*freq++ = chan->freq;

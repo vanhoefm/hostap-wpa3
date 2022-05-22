@@ -1145,6 +1145,7 @@ def test_ap_wps_cancel(dev, apdev):
     bss = dev[0].get_bss(apdev[0]['bssid'])
     if "[WPS-AUTH]" in bss['flags']:
         raise Exception("WPS-AUTH flag not cleared")
+    dev[0].flush_scan_cache()
 
 def test_ap_wps_er_add_enrollee(dev, apdev):
     """WPS ER configuring AP and adding a new enrollee using PIN"""
@@ -3960,6 +3961,7 @@ def test_ap_wps_priority(dev, apdev):
     logger.info("WPS provisioning step")
     pin = dev[0].wps_read_pin()
     hapd.request("WPS_PIN any " + pin)
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(apdev[0]['bssid'], freq="2412")
     dev[0].dump_monitor()
     try:

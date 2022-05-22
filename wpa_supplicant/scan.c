@@ -392,6 +392,29 @@ wpa_supplicant_build_filter_ssids(struct wpa_config *conf, size_t *num_ssids)
 }
 
 
+#ifdef CONFIG_P2P
+static bool is_6ghz_supported(struct wpa_supplicant *wpa_s)
+{
+	struct hostapd_channel_data *chnl;
+	int i, j;
+
+	for (i = 0; i < wpa_s->hw.num_modes; i++) {
+		if (wpa_s->hw.modes[i].mode == HOSTAPD_MODE_IEEE80211A) {
+			chnl = wpa_s->hw.modes[i].channels;
+			for (j = 0; j < wpa_s->hw.modes[i].num_channels; j++) {
+				if (chnl[j].flag & HOSTAPD_CHAN_DISABLED)
+					continue;
+				if (is_6ghz_freq(chnl[j].freq))
+					return true;
+			}
+		}
+	}
+
+	return false;
+}
+#endif /* CONFIG_P2P */
+
+
 static void wpa_supplicant_optimize_freqs(
 	struct wpa_supplicant *wpa_s, struct wpa_driver_scan_params *params)
 {
@@ -729,13 +752,13 @@ static void wpa_setband_scan_freqs(struct wpa_supplicant *wpa_s,
 
 	if (wpa_s->setband_mask & WPA_SETBAND_5G)
 		wpa_add_scan_freqs_list(wpa_s, HOSTAPD_MODE_IEEE80211A, params,
-					0);
+					false);
 	if (wpa_s->setband_mask & WPA_SETBAND_2G)
 		wpa_add_scan_freqs_list(wpa_s, HOSTAPD_MODE_IEEE80211G, params,
-					0);
+					false);
 	if (wpa_s->setband_mask & WPA_SETBAND_6G)
 		wpa_add_scan_freqs_list(wpa_s, HOSTAPD_MODE_IEEE80211A, params,
-					1);
+					true);
 }
 
 
@@ -1305,6 +1328,12 @@ ssid_list_set:
 		}
 	}
 
+	if (wpa_s->last_scan_req == MANUAL_SCAN_REQ &&
+	    wpa_s->manual_non_coloc_6ghz) {
+		wpa_dbg(wpa_s, MSG_DEBUG, "Collocated 6 GHz logic is disabled");
+		params.non_coloc_6ghz = 1;
+	}
+
 	scan_params = &params;
 
 scan:
@@ -1335,6 +1364,34 @@ scan:
 				os_free(params.freqs);
 				params.freqs = NULL;
 			}
+		}
+	}
+
+	if (!params.freqs &&
+	    (wpa_s->p2p_in_invitation || wpa_s->p2p_in_provisioning) &&
+	    !is_p2p_allow_6ghz(wpa_s->global->p2p) &&
+	    is_6ghz_supported(wpa_s)) {
+		int i;
+
+		/* Exclude 5 GHz channels from the full scan for P2P connection
+		 * since the 6 GHz band is disabled for P2P uses. */
+		wpa_printf(MSG_DEBUG,
+			   "P2P: 6 GHz disabled - update the scan frequency list");
+		for (i = 0; i < wpa_s->hw.num_modes; i++) {
+			if (wpa_s->hw.modes[i].num_channels == 0)
+				continue;
+			if (wpa_s->hw.modes[i].mode == HOSTAPD_MODE_IEEE80211G)
+				wpa_add_scan_freqs_list(
+					wpa_s, HOSTAPD_MODE_IEEE80211G,
+					&params, false);
+			if (wpa_s->hw.modes[i].mode == HOSTAPD_MODE_IEEE80211A)
+				wpa_add_scan_freqs_list(
+					wpa_s, HOSTAPD_MODE_IEEE80211A,
+					&params, false);
+			if (wpa_s->hw.modes[i].mode == HOSTAPD_MODE_IEEE80211AD)
+				wpa_add_scan_freqs_list(
+					wpa_s, HOSTAPD_MODE_IEEE80211AD,
+					&params, false);
 		}
 	}
 #endif /* CONFIG_P2P */
@@ -2130,20 +2187,33 @@ static void dump_scan_res(struct wpa_scan_results *scan_res)
 	for (i = 0; i < scan_res->num; i++) {
 		struct wpa_scan_res *r = scan_res->res[i];
 		u8 *pos;
+		const u8 *ssid_ie, *ssid = NULL;
+		size_t ssid_len = 0;
+
+		ssid_ie = wpa_scan_get_ie(r, WLAN_EID_SSID);
+		if (ssid_ie) {
+			ssid = ssid_ie + 2;
+			ssid_len = ssid_ie[1];
+		}
+
 		if (r->flags & WPA_SCAN_LEVEL_DBM) {
 			int noise_valid = !(r->flags & WPA_SCAN_NOISE_INVALID);
 
-			wpa_printf(MSG_EXCESSIVE, MACSTR " freq=%d qual=%d "
-				   "noise=%d%s level=%d snr=%d%s flags=0x%x age=%u est=%u",
-				   MAC2STR(r->bssid), r->freq, r->qual,
+			wpa_printf(MSG_EXCESSIVE, MACSTR
+				   " ssid=%s freq=%d qual=%d noise=%d%s level=%d snr=%d%s flags=0x%x age=%u est=%u",
+				   MAC2STR(r->bssid),
+				   wpa_ssid_txt(ssid, ssid_len),
+				   r->freq, r->qual,
 				   r->noise, noise_valid ? "" : "~", r->level,
 				   r->snr, r->snr >= GREAT_SNR ? "*" : "",
 				   r->flags,
 				   r->age, r->est_throughput);
 		} else {
-			wpa_printf(MSG_EXCESSIVE, MACSTR " freq=%d qual=%d "
-				   "noise=%d level=%d flags=0x%x age=%u est=%u",
-				   MAC2STR(r->bssid), r->freq, r->qual,
+			wpa_printf(MSG_EXCESSIVE, MACSTR
+				   " ssid=%s freq=%d qual=%d noise=%d level=%d flags=0x%x age=%u est=%u",
+				   MAC2STR(r->bssid),
+				   wpa_ssid_txt(ssid, ssid_len),
+				   r->freq, r->qual,
 				   r->noise, r->level, r->flags, r->age,
 				   r->est_throughput);
 		}
@@ -2851,6 +2921,7 @@ wpa_scan_clone_params(const struct wpa_driver_scan_params *src)
 	params->relative_adjust_band = src->relative_adjust_band;
 	params->relative_adjust_rssi = src->relative_adjust_rssi;
 	params->p2p_include_6ghz = src->p2p_include_6ghz;
+	params->non_coloc_6ghz = src->non_coloc_6ghz;
 	return params;
 
 failed:

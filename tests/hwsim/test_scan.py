@@ -91,6 +91,9 @@ def test_scan(dev, apdev):
     logger.info("Active single-channel scan on AP's operating channel")
     check_scan_retry(dev[0], "freq=2412 passive=0 use_id=1", bssid)
 
+    logger.info("Disable collocated 6 GHz scanning")
+    check_scan(dev[0], "freq=2457 non_coloc_6ghz=1 use_id=1")
+
 @remote_compatible
 def test_scan_tsf(dev, apdev):
     """Scan and TSF updates from Beacon/Probe Response frames"""
@@ -262,6 +265,7 @@ def test_scan_bss_operations(dev, apdev):
     hostapd.add_ap(apdev[1], {"ssid": "test2-scan"})
     bssid2 = apdev[1]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].scan(freq="2412")
     dev[0].scan(freq="2412")
     dev[0].scan(freq="2412")
@@ -1286,7 +1290,6 @@ def test_scan_chan_switch(dev, apdev):
     run_scan(dev[0], bssid, 2412)
     dev[0].dump_monitor()
 
-@reset_ignore_old_scan_res
 def test_scan_new_only(dev, apdev):
     """Scan and only_new=1 multiple times"""
     dev[0].flush_scan_cache()
@@ -1395,7 +1398,7 @@ def test_scan_parsing(dev, apdev):
              # Too long SSID
              "bssid=02:ff:00:00:00:01 ie=0033" + 33*'FF',
              # All parameters
-             "flags=ffffffff bssid=02:ff:00:00:00:02 freq=1234 beacon_int=102 caps=1234 qual=10 noise=10 level=10 tsf=1122334455667788 age=123456 est_throughput=100 snr=10 parent_tsf=1122334455667788 tsf_bssid=02:03:04:05:06:07 ie=000474657374 beacon_ie=000474657374",
+             "flags=ffffffff bssid=02:ff:00:00:00:02 freq=1234 beacon_int=102 caps=1234 qual=10 noise=10 level=10 tsf=1122334455667788 age=123 est_throughput=100 snr=10 parent_tsf=1122334455667788 tsf_bssid=02:03:04:05:06:07 ie=000474657374 beacon_ie=000474657374",
              # Beacon IEs truncated
              "bssid=02:ff:00:00:00:03 ie=0000 beacon_ie=0003ffff",
              # Probe Response IEs truncated

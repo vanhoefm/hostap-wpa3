@@ -66,6 +66,10 @@ static int setup_interface2(struct hostapd_iface *iface);
 static void channel_list_update_timeout(void *eloop_ctx, void *timeout_ctx);
 static void hostapd_interface_setup_failure_handler(void *eloop_ctx,
 						    void *timeout_ctx);
+#ifdef CONFIG_IEEE80211AX
+static void hostapd_switch_color_timeout_handler(void *eloop_data,
+						 void *user_ctx);
+#endif /* CONFIG_IEEE80211AX */
 
 
 int hostapd_for_each_interface(struct hapd_interfaces *interfaces,
@@ -462,6 +466,10 @@ void hostapd_free_hapd_data(struct hostapd_data *hapd)
 	}
 	eloop_cancel_timeout(auth_sae_process_commit, hapd, NULL);
 #endif /* CONFIG_SAE */
+
+#ifdef CONFIG_IEEE80211AX
+	eloop_cancel_timeout(hostapd_switch_color_timeout_handler, hapd, NULL);
+#endif /* CONFIG_IEEE80211AX */
 }
 
 
@@ -1458,14 +1466,14 @@ static int hostapd_set_acl_list(struct hostapd_data *hapd,
 }
 
 
-static void hostapd_set_acl(struct hostapd_data *hapd)
+int hostapd_set_acl(struct hostapd_data *hapd)
 {
 	struct hostapd_config *conf = hapd->iconf;
-	int err;
+	int err = 0;
 	u8 accept_acl;
 
 	if (hapd->iface->drv_max_acl_mac_addrs == 0)
-		return;
+		return 0;
 
 	if (conf->bss[0]->macaddr_acl == DENY_UNLESS_ACCEPTED) {
 		accept_acl = 1;
@@ -1474,7 +1482,7 @@ static void hostapd_set_acl(struct hostapd_data *hapd)
 					   accept_acl);
 		if (err) {
 			wpa_printf(MSG_DEBUG, "Failed to set accept acl");
-			return;
+			return -1;
 		}
 	} else if (conf->bss[0]->macaddr_acl == ACCEPT_UNLESS_DENIED) {
 		accept_acl = 0;
@@ -1483,9 +1491,10 @@ static void hostapd_set_acl(struct hostapd_data *hapd)
 					   accept_acl);
 		if (err) {
 			wpa_printf(MSG_DEBUG, "Failed to set deny acl");
-			return;
+			return -1;
 		}
 	}
+	return err;
 }
 
 
@@ -1775,6 +1784,16 @@ static void fst_hostapd_get_channel_info_cb(void *ctx,
 }
 
 
+static int fst_hostapd_get_hw_modes_cb(void *ctx,
+				       struct hostapd_hw_modes **modes)
+{
+	struct hostapd_data *hapd = ctx;
+
+	*modes = hapd->iface->hw_features;
+	return hapd->iface->num_hw_features;
+}
+
+
 static void fst_hostapd_set_ies_cb(void *ctx, const struct wpabuf *fst_ies)
 {
 	struct hostapd_data *hapd = ctx;
@@ -1867,9 +1886,11 @@ static const u8 * fst_hostapd_get_peer_next(void *ctx,
 void fst_hostapd_fill_iface_obj(struct hostapd_data *hapd,
 				struct fst_wpa_obj *iface_obj)
 {
+	os_memset(iface_obj, 0, sizeof(*iface_obj));
 	iface_obj->ctx = hapd;
 	iface_obj->get_bssid = fst_hostapd_get_bssid_cb;
 	iface_obj->get_channel_info = fst_hostapd_get_channel_info_cb;
+	iface_obj->get_hw_modes = fst_hostapd_get_hw_modes_cb;
 	iface_obj->set_ies = fst_hostapd_set_ies_cb;
 	iface_obj->send_action = fst_hostapd_send_action_cb;
 	iface_obj->get_mb_ie = fst_hostapd_get_mb_ie_cb;
@@ -2067,6 +2088,7 @@ static int hostapd_setup_interface_complete_sync(struct hostapd_iface *iface,
 				     hapd->iconf->ieee80211n,
 				     hapd->iconf->ieee80211ac,
 				     hapd->iconf->ieee80211ax,
+				     hapd->iconf->ieee80211be,
 				     hapd->iconf->secondary_channel,
 				     hostapd_get_oper_chwidth(hapd->iconf),
 				     hostapd_get_oper_centr_freq_seg0_idx(
@@ -3452,14 +3474,30 @@ static int hostapd_change_config_freq(struct hostapd_data *hapd,
 				    conf->channel, conf->enable_edmg,
 				    conf->edmg_channel, conf->ieee80211n,
 				    conf->ieee80211ac, conf->ieee80211ax,
-				    conf->secondary_channel,
+				    conf->ieee80211be, conf->secondary_channel,
 				    hostapd_get_oper_chwidth(conf),
 				    hostapd_get_oper_centr_freq_seg0_idx(conf),
 				    hostapd_get_oper_centr_freq_seg1_idx(conf),
 				    conf->vht_capab,
 				    mode ? &mode->he_capab[IEEE80211_MODE_AP] :
+				    NULL,
+				    mode ? &mode->eht_capab[IEEE80211_MODE_AP] :
 				    NULL))
 		return -1;
+
+	switch (params->bandwidth) {
+	case 0:
+	case 20:
+		conf->ht_capab &= ~HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET;
+		break;
+	case 40:
+	case 80:
+	case 160:
+		conf->ht_capab |= HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET;
+		break;
+	default:
+		return -1;
+	}
 
 	switch (params->bandwidth) {
 	case 0:
@@ -3482,6 +3520,7 @@ static int hostapd_change_config_freq(struct hostapd_data *hapd,
 
 	conf->channel = channel;
 	conf->ieee80211n = params->ht_enabled;
+	conf->ieee80211ac = params->vht_enabled;
 	conf->secondary_channel = params->sec_channel_offset;
 	ieee80211_freq_to_chan(params->center_freq1,
 			       &seg0);
@@ -3530,11 +3569,12 @@ static int hostapd_fill_csa_settings(struct hostapd_data *hapd,
 		    &hapd->iface->cs_oper_class,
 		    &chan) == NUM_HOSTAPD_MODES) {
 		wpa_printf(MSG_DEBUG,
-			   "invalid frequency for channel switch (freq=%d, sec_channel_offset=%d, vht_enabled=%d, he_enabled=%d)",
+			   "invalid frequency for channel switch (freq=%d, sec_channel_offset=%d, vht_enabled=%d, he_enabled=%d, eht_enabled=%d)",
 			   settings->freq_params.freq,
 			   settings->freq_params.sec_channel_offset,
 			   settings->freq_params.vht_enabled,
-			   settings->freq_params.he_enabled);
+			   settings->freq_params.he_enabled,
+			   settings->freq_params.eht_enabled);
 		return -1;
 	}
 
@@ -3591,6 +3631,11 @@ void hostapd_cleanup_cs_params(struct hostapd_data *hapd)
 void hostapd_chan_switch_config(struct hostapd_data *hapd,
 				struct hostapd_freq_params *freq_params)
 {
+	if (freq_params->eht_enabled)
+		hapd->iconf->ch_switch_eht_config |= CH_SWITCH_EHT_ENABLED;
+	else
+		hapd->iconf->ch_switch_eht_config |= CH_SWITCH_EHT_DISABLED;
+
 	if (freq_params->he_enabled)
 		hapd->iconf->ch_switch_he_config |= CH_SWITCH_HE_ENABLED;
 	else
@@ -3603,7 +3648,8 @@ void hostapd_chan_switch_config(struct hostapd_data *hapd,
 
 	hostapd_logger(hapd, NULL, HOSTAPD_MODULE_IEEE80211,
 		       HOSTAPD_LEVEL_INFO,
-		       "CHAN_SWITCH HE config 0x%x VHT config 0x%x",
+		       "CHAN_SWITCH EHT config 0x%x HE config 0x%x VHT config 0x%x",
+		       hapd->iconf->ch_switch_eht_config,
 		       hapd->iconf->ch_switch_he_config,
 		       hapd->iconf->ch_switch_vht_config);
 }
@@ -3681,6 +3727,7 @@ hostapd_switch_channel_fallback(struct hostapd_iface *iface,
 	iface->conf->ieee80211n = freq_params->ht_enabled;
 	iface->conf->ieee80211ac = freq_params->vht_enabled;
 	iface->conf->ieee80211ax = freq_params->he_enabled;
+	iface->conf->ieee80211be = freq_params->eht_enabled;
 
 	/*
 	 * cs_params must not be cleared earlier because the freq_params
@@ -3690,6 +3737,139 @@ hostapd_switch_channel_fallback(struct hostapd_iface *iface,
 	hostapd_disable_iface(iface);
 	hostapd_enable_iface(iface);
 }
+
+
+#ifdef CONFIG_IEEE80211AX
+
+void hostapd_cleanup_cca_params(struct hostapd_data *hapd)
+{
+	hapd->cca_count = 0;
+	hapd->cca_color = 0;
+	hapd->cca_c_off_beacon = 0;
+	hapd->cca_c_off_proberesp = 0;
+	hapd->cca_in_progress = false;
+}
+
+
+static int hostapd_fill_cca_settings(struct hostapd_data *hapd,
+				     struct cca_settings *settings)
+{
+	struct hostapd_iface *iface = hapd->iface;
+	u8 old_color;
+	int ret;
+
+	if (!iface || iface->conf->he_op.he_bss_color_disabled)
+		return -1;
+
+	old_color = iface->conf->he_op.he_bss_color;
+	iface->conf->he_op.he_bss_color = hapd->cca_color;
+	ret = hostapd_build_beacon_data(hapd, &settings->beacon_after);
+	if (ret)
+		return ret;
+
+	iface->conf->he_op.he_bss_color = old_color;
+
+	settings->cca_count = hapd->cca_count;
+	settings->cca_color = hapd->cca_color,
+	hapd->cca_in_progress = true;
+
+	ret = hostapd_build_beacon_data(hapd, &settings->beacon_cca);
+	if (ret) {
+		free_beacon_data(&settings->beacon_after);
+		return ret;
+	}
+
+	settings->counter_offset_beacon = hapd->cca_c_off_beacon;
+	settings->counter_offset_presp = hapd->cca_c_off_proberesp;
+
+	return 0;
+}
+
+
+static void hostapd_switch_color_timeout_handler(void *eloop_data,
+						 void *user_ctx)
+{
+	struct hostapd_data *hapd = (struct hostapd_data *) eloop_data;
+	os_time_t delta_t;
+	unsigned int b;
+	int i, r;
+
+	 /* CCA can be triggered once the handler constantly receives
+	  * color collision events to for at least
+	  * DOT11BSS_COLOR_COLLISION_AP_PERIOD (50 s by default). */
+	delta_t = hapd->last_color_collision.sec -
+		hapd->first_color_collision.sec;
+	if (delta_t < DOT11BSS_COLOR_COLLISION_AP_PERIOD)
+		return;
+
+	r = os_random() % HE_OPERATION_BSS_COLOR_MAX;
+	for (i = 0; i < HE_OPERATION_BSS_COLOR_MAX; i++) {
+		if (r && !(hapd->color_collision_bitmap & (1ULL << r)))
+			break;
+
+		r = (r + 1) % HE_OPERATION_BSS_COLOR_MAX;
+	}
+
+	if (i == HE_OPERATION_BSS_COLOR_MAX) {
+		/* There are no free colors so turn BSS coloring off */
+		wpa_printf(MSG_INFO,
+			   "No free colors left, turning off BSS coloring");
+		hapd->iface->conf->he_op.he_bss_color_disabled = 1;
+		hapd->iface->conf->he_op.he_bss_color = os_random() % 63 + 1;
+		for (b = 0; b < hapd->iface->num_bss; b++)
+			ieee802_11_set_beacon(hapd->iface->bss[b]);
+		return;
+	}
+
+	for (b = 0; b < hapd->iface->num_bss; b++) {
+		struct hostapd_data *bss = hapd->iface->bss[b];
+		struct cca_settings settings;
+		int ret;
+
+		hostapd_cleanup_cca_params(bss);
+		bss->cca_color = r;
+		bss->cca_count = 10;
+
+		if (hostapd_fill_cca_settings(bss, &settings)) {
+			hostapd_cleanup_cca_params(bss);
+			continue;
+		}
+
+		ret = hostapd_drv_switch_color(bss, &settings);
+		if (ret)
+			hostapd_cleanup_cca_params(bss);
+
+		free_beacon_data(&settings.beacon_cca);
+		free_beacon_data(&settings.beacon_after);
+	}
+}
+
+
+void hostapd_switch_color(struct hostapd_data *hapd, u64 bitmap)
+{
+	struct os_reltime now;
+
+	if (hapd->cca_in_progress)
+		return;
+
+	if (os_get_reltime(&now))
+		return;
+
+	hapd->color_collision_bitmap = bitmap;
+	hapd->last_color_collision = now;
+
+	if (eloop_is_timeout_registered(hostapd_switch_color_timeout_handler,
+					hapd, NULL))
+		return;
+
+	hapd->first_color_collision = now;
+	/* 10 s window as margin for persistent color collision reporting */
+	eloop_register_timeout(DOT11BSS_COLOR_COLLISION_AP_PERIOD + 10, 0,
+			       hostapd_switch_color_timeout_handler,
+			       hapd, NULL);
+}
+
+#endif /* CONFIG_IEEE80211AX */
 
 #endif /* NEED_AP_MLME */
 

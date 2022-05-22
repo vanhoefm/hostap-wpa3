@@ -1,23 +1,28 @@
 BINALL=wpa_supplicant wpa_cli
 
-ifndef CONFIG_NO_WPA_PASSPHRASE
-BINALL += wpa_passphrase
-endif
-
 ALL = $(BINALL)
 ALL += systemd/wpa_supplicant.service
 ALL += systemd/wpa_supplicant@.service
 ALL += systemd/wpa_supplicant-nl80211@.service
 ALL += systemd/wpa_supplicant-wired@.service
 ALL += dbus/fi.w1.wpa_supplicant1.service
-ifdef CONFIG_BUILD_WPA_CLIENT_SO
-ALL += libwpa_client.so
-endif
 
 EXTRA_TARGETS=dynamic_eap_methods
 
 CONFIG_FILE=.config
 include ../src/build.rules
+
+ifdef CONFIG_BUILD_WPA_CLIENT_SO
+# add the dependency this way to allow CONFIG_BUILD_WPA_CLIENT_SO
+# being set in the config which is read by build.rules
+_all: libwpa_client.so
+endif
+
+ifndef CONFIG_NO_WPA_PASSPHRASE
+# add the dependency this way to allow CONFIG_NO_WPA_PASSPHRASE
+# being set in the config which is read by build.rules
+_all: wpa_passphrase
+endif
 
 ifdef LIBS
 # If LIBS is set with some global build system defaults, clone those for
@@ -30,9 +35,9 @@ LIBS_p := $(LIBS)
 endif
 endif
 
-export LIBDIR ?= /usr/local/lib/
-export INCDIR ?= /usr/local/include/
-export BINDIR ?= /usr/local/sbin/
+export LIBDIR ?= /usr/local/lib
+export INCDIR ?= /usr/local/include
+export BINDIR ?= /usr/local/sbin
 PKG_CONFIG ?= pkg-config
 
 CFLAGS += $(EXTRA_CFLAGS)
@@ -68,6 +73,9 @@ $(DESTDIR)$(BINDIR)/%: %
 
 install: $(addprefix $(DESTDIR)$(BINDIR)/,$(BINALL))
 	$(MAKE) -C ../src install
+ifndef CONFIG_NO_WPA_PASSPHRASE
+	install -D wpa_passphrase $(DESTDIR)/$(BINDIR)/wpa_passphrase
+endif
 ifdef CONFIG_BUILD_WPA_CLIENT_SO
 	install -m 0644 -D libwpa_client.so $(DESTDIR)/$(LIBDIR)/libwpa_client.so
 	install -m 0644 -D ../src/common/wpa_ctrl.h $(DESTDIR)/$(INCDIR)/wpa_ctrl.h
@@ -79,7 +87,6 @@ endif
 
 ifdef CONFIG_FIPS
 CONFIG_NO_RANDOM_POOL=
-CONFIG_OPENSSL_CMAC=y
 endif
 
 OBJS = config.o
@@ -294,6 +301,9 @@ NEED_ASN1=y
 ifdef CONFIG_DPP2
 CFLAGS += -DCONFIG_DPP2
 endif
+ifdef CONFIG_DPP3
+CFLAGS += -DCONFIG_DPP3
+endif
 endif
 
 ifdef CONFIG_OWE
@@ -389,11 +399,10 @@ CONFIG_AP=y
 ifdef CONFIG_P2P_STRICT
 CFLAGS += -DCONFIG_P2P_STRICT
 endif
-endif
-
 ifdef CONFIG_WIFI_DISPLAY
 CFLAGS += -DCONFIG_WIFI_DISPLAY
 OBJS += wifi_display.o
+endif
 endif
 
 ifdef CONFIG_PASN
@@ -478,6 +487,9 @@ OBJS += ../src/eap_peer/eap_tls.o
 endif
 TLS_FUNCS=y
 CONFIG_IEEE8021X_EAPOL=y
+ifdef CONFIG_EAP_TLSV1_3
+CFLAGS += -DEAP_TLSV1_3
+endif
 endif
 
 ifdef CONFIG_EAP_UNAUTH_TLS
@@ -744,6 +756,7 @@ OBJS += ../src/eap_peer/eap_pwd.o ../src/eap_common/eap_pwd_common.o
 CONFIG_IEEE8021X_EAPOL=y
 NEED_ECC=y
 NEED_DRAGONFLY=y
+MS_FUNCS=y
 endif
 
 ifdef CONFIG_EAP_EKE
@@ -933,6 +946,9 @@ endif
 ifdef CONFIG_IEEE80211AX
 OBJS += ../src/ap/ieee802_11_he.o
 endif
+ifdef CONFIG_IEEE80211BE
+OBJS += ../src/ap/ieee802_11_eht.o
+endif
 ifdef CONFIG_WNM_AP
 CFLAGS += -DCONFIG_WNM_AP
 OBJS += ../src/ap/wnm_ap.o
@@ -954,6 +970,10 @@ OBJS += ../src/eap_server/eap_server_methods.o
 
 ifdef CONFIG_IEEE80211AC
 CFLAGS += -DCONFIG_IEEE80211AC
+endif
+ifdef CONFIG_IEEE80211BE
+CONFIG_IEEE80211AX=y
+CFLAGS += -DCONFIG_IEEE80211BE
 endif
 ifdef CONFIG_IEEE80211AX
 CFLAGS += -DCONFIG_IEEE80211AX
@@ -1011,7 +1031,6 @@ ifdef CONFIG_PCSC
 # PC/SC interface for smartcards (USIM, GSM SIM)
 CFLAGS += -DPCSC_FUNCS -I/usr/include/PCSC
 OBJS += ../src/utils/pcsc_funcs.o
-# -lpthread may not be needed depending on how pcsc-lite was configured
 ifdef CONFIG_NATIVE_WINDOWS
 #Once MinGW gets support for WinScard, -lwinscard could be used instead of the
 #dynamic symbol loading that is now used in pcsc_funcs.c
@@ -1020,7 +1039,7 @@ else
 ifdef CONFIG_OSX
 LIBS += -framework PCSC
 else
-LIBS += -lpcsclite -lpthread
+LIBS += $(shell $(PKG_CONFIG) --libs libpcsclite)
 endif
 endif
 endif
@@ -1102,6 +1121,7 @@ LIBS_p += -lwolfssl -lm
 endif
 
 ifeq ($(CONFIG_TLS), openssl)
+CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
 ifdef TLS_FUNCS
 CFLAGS += -DEAP_TLS_OPENSSL
 OBJS += ../src/crypto/tls_openssl.o
@@ -1353,9 +1373,7 @@ ifdef NEED_AES_ENCBLOCK
 AESOBJS += ../src/crypto/aes-encblock.o
 endif
 NEED_AES_ENC=y
-ifdef CONFIG_OPENSSL_CMAC
-CFLAGS += -DCONFIG_OPENSSL_CMAC
-else
+ifneq ($(CONFIG_TLS), openssl)
 ifneq ($(CONFIG_TLS), linux)
 ifneq ($(CONFIG_TLS), wolfssl)
 AESOBJS += ../src/crypto/aes-omac1.o
@@ -1466,6 +1484,17 @@ ifdef CONFIG_INTERNAL_RC4
 ifndef CONFIG_NO_RC4
 OBJS += ../src/crypto/rc4.o
 endif
+endif
+endif
+
+ifdef CONFIG_SAE
+ifdef NEED_SHA384
+# Need to add HMAC-SHA384 KDF as well, if SHA384 was enabled.
+NEED_HMAC_SHA384_KDF=y
+endif
+ifdef NEED_SHA512
+# Need to add HMAC-SHA512 KDF as well, if SHA512 was enabled.
+NEED_HMAC_SHA512_KDF=y
 endif
 endif
 
@@ -2071,3 +2100,4 @@ clean: common-clean
 	rm -f libwpa_client.a
 	rm -f libwpa_client.so
 	rm -f libwpa_test1 libwpa_test2
+	rm -f wpa_passphrase

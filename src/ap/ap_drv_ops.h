@@ -43,6 +43,8 @@ int hostapd_sta_add(struct hostapd_data *hapd,
 		    const struct ieee80211_vht_capabilities *vht_capab,
 		    const struct ieee80211_he_capabilities *he_capab,
 		    size_t he_capab_len,
+		    const struct ieee80211_eht_capabilities *eht_capab,
+		    size_t eht_capab_len,
 		    const struct ieee80211_he_6ghz_band_cap *he_6ghz_capab,
 		    u32 flags, u8 qosinfo, u8 vht_opmode, int supp_p2p_ps,
 		    int set);
@@ -64,8 +66,8 @@ int hostapd_get_seqnum(const char *ifname, struct hostapd_data *hapd,
 int hostapd_flush(struct hostapd_data *hapd);
 int hostapd_set_freq(struct hostapd_data *hapd, enum hostapd_hw_mode mode,
 		     int freq, int channel, int edmg, u8 edmg_channel,
-		     int ht_enabled, int vht_enabled,
-		     int he_enabled, int sec_channel_offset, int oper_chwidth,
+		     int ht_enabled, int vht_enabled, int he_enabled,
+		     bool eht_enabled, int sec_channel_offset, int oper_chwidth,
 		     int center_segment0, int center_segment1);
 int hostapd_set_rts(struct hostapd_data *hapd, int rts);
 int hostapd_set_frag(struct hostapd_data *hapd, int frag);
@@ -128,9 +130,10 @@ int hostapd_add_tspec(struct hostapd_data *hapd, const u8 *addr,
 int hostapd_start_dfs_cac(struct hostapd_iface *iface,
 			  enum hostapd_hw_mode mode, int freq,
 			  int channel, int ht_enabled, int vht_enabled,
-			  int he_enabled,
+			  int he_enabled, bool eht_enabled,
 			  int sec_channel_offset, int oper_chwidth,
-			  int center_segment0, int center_segment1);
+			  int center_segment0, int center_segment1,
+			  bool radar_background);
 int hostapd_drv_do_acs(struct hostapd_data *hapd);
 int hostapd_drv_update_dh_ie(struct hostapd_data *hapd, const u8 *peer,
 			     u16 reason_code, const u8 *ie, size_t ielen);
@@ -298,6 +301,17 @@ static inline int hostapd_drv_switch_channel(struct hostapd_data *hapd,
 
 	return hapd->driver->switch_channel(hapd->drv_priv, settings);
 }
+
+#ifdef CONFIG_IEEE80211AX
+static inline int hostapd_drv_switch_color(struct hostapd_data *hapd,
+					   struct cca_settings *settings)
+{
+	if (!hapd->driver || !hapd->driver->switch_color || !hapd->drv_priv)
+		return -1;
+
+	return hapd->driver->switch_color(hapd->drv_priv, settings);
+}
+#endif /* CONFIG_IEEE80211AX */
 
 static inline int hostapd_drv_status(struct hostapd_data *hapd, char *buf,
 				     size_t buflen)

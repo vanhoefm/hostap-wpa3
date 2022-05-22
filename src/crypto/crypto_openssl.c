@@ -1,6 +1,6 @@
 /*
  * Wrapper functions for OpenSSL libcrypto
- * Copyright (c) 2004-2017, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -16,13 +16,18 @@
 #include <openssl/dh.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
-#ifdef CONFIG_OPENSSL_CMAC
-#include <openssl/cmac.h>
-#endif /* CONFIG_OPENSSL_CMAC */
+#include <openssl/pem.h>
 #ifdef CONFIG_ECC
 #include <openssl/ec.h>
 #include <openssl/x509.h>
 #endif /* CONFIG_ECC */
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#include <openssl/core_names.h>
+#include <openssl/param_build.h>
+#else /* OpenSSL version >= 3.0 */
+#include <openssl/cmac.h>
+#endif /* OpenSSL version >= 3.0 */
 
 #include "common.h"
 #include "utils/const_time.h"
@@ -36,9 +41,7 @@
 #include "aes_wrap.h"
 #include "crypto.h"
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || \
-	(defined(LIBRESSL_VERSION_NUMBER) && \
-	 LIBRESSL_VERSION_NUMBER < 0x20700000L)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 /* Compatibility wrappers for older versions. */
 
 static HMAC_CTX * HMAC_CTX_new(void)
@@ -82,21 +85,124 @@ static void EVP_MD_CTX_free(EVP_MD_CTX *ctx)
 
 
 #ifdef CONFIG_ECC
+
 static EC_KEY * EVP_PKEY_get0_EC_KEY(EVP_PKEY *pkey)
 {
 	if (pkey->type != EVP_PKEY_EC)
 		return NULL;
 	return pkey->pkey.ec;
 }
+
+
+static int ECDSA_SIG_set0(ECDSA_SIG *sig, BIGNUM *r, BIGNUM *s)
+{
+	sig->r = r;
+	sig->s = s;
+	return 1;
+}
+
+
+static void ECDSA_SIG_get0(const ECDSA_SIG *sig, const BIGNUM **pr,
+			   const BIGNUM **ps)
+{
+	if (pr)
+		*pr = sig->r;
+	if (ps)
+		*ps = sig->s;
+}
+
 #endif /* CONFIG_ECC */
 
+static const unsigned char * ASN1_STRING_get0_data(const ASN1_STRING *x)
+{
+	return ASN1_STRING_data((ASN1_STRING *) x);
+}
 #endif /* OpenSSL version < 1.1.0 */
+
+
+#if OPENSSL_VERSION_NUMBER < 0x10101000L || \
+	(defined(LIBRESSL_VERSION_NUMBER) && \
+	 LIBRESSL_VERSION_NUMBER < 0x30400000L)
+
+static int EC_POINT_get_affine_coordinates(const EC_GROUP *group,
+					   const EC_POINT *point, BIGNUM *x,
+					   BIGNUM *y, BN_CTX *ctx)
+{
+	return EC_POINT_get_affine_coordinates_GFp(group, point, x, y, ctx);
+}
+
+
+static int EC_POINT_set_affine_coordinates(const EC_GROUP *group,
+					   EC_POINT *point, const BIGNUM *x,
+					   const BIGNUM *y, BN_CTX *ctx)
+{
+	return EC_POINT_set_affine_coordinates_GFp(group, point, x, y, ctx);
+}
+
+#endif /* OpenSSL version < 1.1.1 */
+
+
+#if OPENSSL_VERSION_NUMBER < 0x10101000L || \
+	defined(OPENSSL_IS_BORINGSSL) || \
+	(defined(LIBRESSL_VERSION_NUMBER) && \
+	 LIBRESSL_VERSION_NUMBER < 0x30400000L)
+
+static int EC_POINT_set_compressed_coordinates(const EC_GROUP *group,
+					       EC_POINT *point, const BIGNUM *x,
+					       int y_bit, BN_CTX *ctx)
+{
+	return EC_POINT_set_compressed_coordinates_GFp(group, point, x, y_bit,
+						       ctx);
+}
+
+
+static int EC_GROUP_get_curve(const EC_GROUP *group, BIGNUM *p, BIGNUM *a,
+			      BIGNUM *b, BN_CTX *ctx)
+{
+	return EC_GROUP_get_curve_GFp(group, p, a, b, ctx);
+}
+
+#endif /* OpenSSL version < 1.1.1 */
+
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+static OSSL_PROVIDER *openssl_default_provider = NULL;
+static OSSL_PROVIDER *openssl_legacy_provider = NULL;
+#endif /* OpenSSL version >= 3.0 */
+
+void openssl_load_legacy_provider(void)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	if (openssl_legacy_provider)
+		return;
+
+	openssl_legacy_provider = OSSL_PROVIDER_load(NULL, "legacy");
+	if (openssl_legacy_provider && !openssl_default_provider)
+		openssl_default_provider = OSSL_PROVIDER_load(NULL, "default");
+#endif /* OpenSSL version >= 3.0 */
+}
+
+
+static void openssl_unload_legacy_provider(void)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	if (openssl_legacy_provider) {
+		OSSL_PROVIDER_unload(openssl_legacy_provider);
+		openssl_legacy_provider = NULL;
+	}
+	if (openssl_default_provider) {
+		OSSL_PROVIDER_unload(openssl_default_provider);
+		openssl_default_provider = NULL;
+	}
+#endif /* OpenSSL version >= 3.0 */
+}
+
+
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
 
 static BIGNUM * get_group5_prime(void)
 {
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && \
-	!(defined(LIBRESSL_VERSION_NUMBER) && \
-	  LIBRESSL_VERSION_NUMBER < 0x20700000L)
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
 	return BN_get_rfc3526_prime_1536(NULL);
 #elif !defined(OPENSSL_IS_BORINGSSL)
 	return get_rfc3526_prime_1536(NULL);
@@ -146,6 +252,8 @@ static BIGNUM * get_group5_order(void)
 	};
 	return BN_bin2bn(RFC3526_ORDER_1536, sizeof(RFC3526_ORDER_1536), NULL);
 }
+
+#endif /* OpenSSL version < 3.0 */
 
 
 #ifdef OPENSSL_NO_SHA256
@@ -198,6 +306,7 @@ static int openssl_digest_vector(const EVP_MD *type, size_t num_elem,
 #ifndef CONFIG_FIPS
 int md4_vector(size_t num_elem, const u8 *addr[], const size_t *len, u8 *mac)
 {
+	openssl_load_legacy_provider();
 	return openssl_digest_vector(EVP_md4(), num_elem, addr, len, mac);
 }
 #endif /* CONFIG_FIPS */
@@ -208,6 +317,8 @@ int des_encrypt(const u8 *clear, const u8 *key, u8 *cypher)
 	u8 pkey[8], next, tmp;
 	int i, plen, ret = -1;
 	EVP_CIPHER_CTX *ctx;
+
+	openssl_load_legacy_provider();
 
 	/* Add parity bits to the key */
 	next = 0;
@@ -245,6 +356,8 @@ int rc4_skip(const u8 *key, size_t keylen, size_t skip,
 	int outl;
 	int res = -1;
 	unsigned char skip_buf[16];
+
+	openssl_load_legacy_provider();
 
 	ctx = EVP_CIPHER_CTX_new();
 	if (!ctx ||
@@ -350,7 +463,7 @@ void * aes_encrypt_init(const u8 *key, size_t len)
 	if (ctx == NULL)
 		return NULL;
 	if (EVP_EncryptInit_ex(ctx, type, NULL, key, NULL) != 1) {
-		os_free(ctx);
+		EVP_CIPHER_CTX_free(ctx);
 		return NULL;
 	}
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
@@ -448,8 +561,52 @@ void aes_decrypt_deinit(void *ctx)
 #ifndef CONFIG_FIPS
 #ifndef CONFIG_OPENSSL_INTERNAL_AES_WRAP
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+static const EVP_CIPHER * aes_get_evp_wrap_cipher(size_t keylen)
+{
+	switch (keylen) {
+	case 16:
+		return EVP_aes_128_wrap();
+	case 24:
+		return EVP_aes_192_wrap();
+	case 32:
+		return EVP_aes_256_wrap();
+	default:
+		return NULL;
+	}
+}
+#endif /* OpenSSL version >= 3.0 */
+
+
 int aes_wrap(const u8 *kek, size_t kek_len, int n, const u8 *plain, u8 *cipher)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_CIPHER_CTX *ctx;
+	const EVP_CIPHER *type;
+	int ret = -1, len;
+	u8 buf[16];
+
+	if (TEST_FAIL())
+		return -1;
+
+	type = aes_get_evp_wrap_cipher(kek_len);
+	if (!type)
+		return -1;
+
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return -1;
+
+	if (EVP_EncryptInit_ex(ctx, type, NULL, kek, NULL) == 1 &&
+	    EVP_CIPHER_CTX_set_padding(ctx, 0) == 1 &&
+	    EVP_EncryptUpdate(ctx, cipher, &len, plain, n * 8) == 1 &&
+	    len == (n + 1) * 8 &&
+	    EVP_EncryptFinal_ex(ctx, buf, &len) == 1)
+		ret = 0;
+
+	EVP_CIPHER_CTX_free(ctx);
+	return ret;
+#else /* OpenSSL version >= 3.0 */
 	AES_KEY actx;
 	int res;
 
@@ -460,12 +617,40 @@ int aes_wrap(const u8 *kek, size_t kek_len, int n, const u8 *plain, u8 *cipher)
 	res = AES_wrap_key(&actx, NULL, cipher, plain, n * 8);
 	OPENSSL_cleanse(&actx, sizeof(actx));
 	return res <= 0 ? -1 : 0;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 int aes_unwrap(const u8 *kek, size_t kek_len, int n, const u8 *cipher,
 	       u8 *plain)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_CIPHER_CTX *ctx;
+	const EVP_CIPHER *type;
+	int ret = -1, len;
+	u8 buf[16];
+
+	if (TEST_FAIL())
+		return -1;
+
+	type = aes_get_evp_wrap_cipher(kek_len);
+	if (!type)
+		return -1;
+
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return -1;
+
+	if (EVP_DecryptInit_ex(ctx, type, NULL, kek, NULL) == 1 &&
+	    EVP_CIPHER_CTX_set_padding(ctx, 0) == 1 &&
+	    EVP_DecryptUpdate(ctx, plain, &len, cipher, (n + 1) * 8) == 1 &&
+	    len == n * 8 &&
+	    EVP_DecryptFinal_ex(ctx, buf, &len) == 1)
+		ret = 0;
+
+	EVP_CIPHER_CTX_free(ctx);
+	return ret;
+#else /* OpenSSL version >= 3.0 */
 	AES_KEY actx;
 	int res;
 
@@ -476,6 +661,7 @@ int aes_unwrap(const u8 *kek, size_t kek_len, int n, const u8 *cipher,
 	res = AES_unwrap_key(&actx, NULL, plain, cipher, (n + 1) * 8);
 	OPENSSL_cleanse(&actx, sizeof(actx));
 	return res <= 0 ? -1 : 0;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 #endif /* CONFIG_OPENSSL_INTERNAL_AES_WRAP */
@@ -766,9 +952,7 @@ void crypto_cipher_deinit(struct crypto_cipher *ctx)
 
 void * dh5_init(struct wpabuf **priv, struct wpabuf **publ)
 {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || \
-	(defined(LIBRESSL_VERSION_NUMBER) && \
-	 LIBRESSL_VERSION_NUMBER < 0x20700000L)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	DH *dh;
 	struct wpabuf *pubkey = NULL, *privkey = NULL;
 	size_t publen, privlen;
@@ -817,6 +1001,57 @@ err:
 	wpabuf_clear_free(privkey);
 	DH_free(dh);
 	return NULL;
+#elif OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *pkey = NULL;
+	OSSL_PARAM params[2];
+	size_t pub_len = OSSL_PARAM_UNMODIFIED;
+	size_t priv_len;
+	struct wpabuf *pubkey = NULL, *privkey = NULL;
+	BIGNUM *priv_bn = NULL;
+	EVP_PKEY_CTX *gctx;
+
+	*priv = NULL;
+	wpabuf_free(*publ);
+	*publ = NULL;
+
+	params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+						     "modp_1536", 0);
+	params[1] = OSSL_PARAM_construct_end();
+
+	gctx = EVP_PKEY_CTX_new_from_name(NULL, "DH", NULL);
+	if (!gctx ||
+	    EVP_PKEY_keygen_init(gctx) != 1 ||
+	    EVP_PKEY_CTX_set_params(gctx, params) != 1 ||
+	    EVP_PKEY_generate(gctx, &pkey) != 1 ||
+	    EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_PRIV_KEY,
+				  &priv_bn) != 1 ||
+	    EVP_PKEY_get_octet_string_param(pkey,
+					    OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+					    NULL, 0, &pub_len) < 0 ||
+	    pub_len == OSSL_PARAM_UNMODIFIED ||
+	    (priv_len = BN_num_bytes(priv_bn)) == 0 ||
+	    !(pubkey = wpabuf_alloc(pub_len)) ||
+	    !(privkey = wpabuf_alloc(priv_len)) ||
+	    EVP_PKEY_get_octet_string_param(pkey,
+					    OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+					    wpabuf_put(pubkey, pub_len),
+					    pub_len, NULL) != 1) {
+		wpa_printf(MSG_INFO, "OpenSSL: failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		wpabuf_free(pubkey);
+		wpabuf_clear_free(privkey);
+		EVP_PKEY_free(pkey);
+		pkey = NULL;
+	} else {
+		BN_bn2bin(priv_bn, wpabuf_put(privkey, priv_len));
+
+		*priv = privkey;
+		*publ = pubkey;
+	}
+
+	BN_clear_free(priv_bn);
+	EVP_PKEY_CTX_free(gctx);
+	return pkey;
 #else
 	DH *dh;
 	struct wpabuf *pubkey = NULL, *privkey = NULL;
@@ -876,9 +1111,7 @@ err:
 
 void * dh5_init_fixed(const struct wpabuf *priv, const struct wpabuf *publ)
 {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || \
-	(defined(LIBRESSL_VERSION_NUMBER) && \
-	 LIBRESSL_VERSION_NUMBER < 0x20700000L)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	DH *dh;
 
 	dh = DH_new();
@@ -909,6 +1142,39 @@ void * dh5_init_fixed(const struct wpabuf *priv, const struct wpabuf *publ)
 err:
 	DH_free(dh);
 	return NULL;
+#elif OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *pkey = NULL;
+	OSSL_PARAM_BLD *bld;
+	OSSL_PARAM *params = NULL;
+	BIGNUM *priv_key, *pub_key;
+	EVP_PKEY_CTX *fctx;
+
+	fctx = EVP_PKEY_CTX_new_from_name(NULL, "DH", NULL);
+	priv_key = BN_bin2bn(wpabuf_head(priv), wpabuf_len(priv), NULL);
+	pub_key = BN_bin2bn(wpabuf_head(publ), wpabuf_len(publ), NULL);
+	bld = OSSL_PARAM_BLD_new();
+	if (!fctx || !priv_key || !pub_key || !bld ||
+	    OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME,
+					    "modp_1536", 0) != 1 ||
+	    OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_PRIV_KEY,
+				   priv_key) != 1 ||
+	    OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_PUB_KEY,
+				   pub_key) != 1 ||
+	    !(params = OSSL_PARAM_BLD_to_param(bld)) ||
+	    EVP_PKEY_fromdata_init(fctx) != 1 ||
+	    EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_KEYPAIR, params) != 1) {
+		wpa_printf(MSG_INFO, "OpenSSL: EVP_PKEY_fromdata failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		EVP_PKEY_free(pkey);
+		pkey = NULL;
+	}
+
+	BN_clear_free(priv_key);
+	BN_free(pub_key);
+	EVP_PKEY_CTX_free(fctx);
+	OSSL_PARAM_BLD_free(bld);
+	OSSL_PARAM_free(params);
+	return pkey;
 #else
 	DH *dh;
 	BIGNUM *p = NULL, *g, *priv_key = NULL, *pub_key = NULL;
@@ -951,6 +1217,36 @@ err:
 struct wpabuf * dh5_derive_shared(void *ctx, const struct wpabuf *peer_public,
 				  const struct wpabuf *own_private)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *pkey = ctx;
+	EVP_PKEY *peer_pub;
+	size_t len;
+	struct wpabuf *res = NULL;
+	EVP_PKEY_CTX *dctx = NULL;
+
+	peer_pub = EVP_PKEY_new();
+	if (!pkey || !peer_pub ||
+	    EVP_PKEY_copy_parameters(peer_pub, pkey) != 1 ||
+	    EVP_PKEY_set1_encoded_public_key(peer_pub, wpabuf_head(peer_public),
+					     wpabuf_len(peer_public)) != 1 ||
+	    !(dctx = EVP_PKEY_CTX_new(pkey, NULL)) ||
+	    EVP_PKEY_derive_init(dctx) != 1 ||
+	    EVP_PKEY_derive_set_peer(dctx, peer_pub) != 1 ||
+	    EVP_PKEY_derive(dctx, NULL, &len) != 1 ||
+	    !(res = wpabuf_alloc(len)) ||
+	    EVP_PKEY_derive(dctx, wpabuf_mhead(res), &len) != 1) {
+		wpa_printf(MSG_INFO, "OpenSSL: EVP_PKEY_derive failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		wpabuf_free(res);
+		res = NULL;
+	} else {
+		wpabuf_put(res, len);
+	}
+
+	EVP_PKEY_free(peer_pub);
+	EVP_PKEY_CTX_free(dctx);
+	return res;
+#else /* OpenSSL version >= 3.0 */
 	BIGNUM *pub_key;
 	struct wpabuf *res = NULL;
 	size_t rlen;
@@ -982,27 +1278,93 @@ err:
 	BN_clear_free(pub_key);
 	wpabuf_clear_free(res);
 	return NULL;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 void dh5_free(void *ctx)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *pkey = ctx;
+
+	EVP_PKEY_free(pkey);
+#else /* OpenSSL version >= 3.0 */
 	DH *dh;
 	if (ctx == NULL)
 		return;
 	dh = ctx;
 	DH_free(dh);
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 struct crypto_hash {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC_CTX *ctx;
+#else /* OpenSSL version >= 3.0 */
 	HMAC_CTX *ctx;
+#endif /* OpenSSL version >= 3.0 */
 };
 
 
 struct crypto_hash * crypto_hash_init(enum crypto_hash_alg alg, const u8 *key,
 				      size_t key_len)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	struct crypto_hash *ctx;
+	EVP_MAC *mac;
+	OSSL_PARAM params[2];
+	char *a = NULL;
+
+	switch (alg) {
+#ifndef OPENSSL_NO_MD5
+	case CRYPTO_HASH_ALG_HMAC_MD5:
+		a = "MD5";
+		break;
+#endif /* OPENSSL_NO_MD5 */
+#ifndef OPENSSL_NO_SHA
+	case CRYPTO_HASH_ALG_HMAC_SHA1:
+		a = "SHA1";
+		break;
+#endif /* OPENSSL_NO_SHA */
+#ifndef OPENSSL_NO_SHA256
+#ifdef CONFIG_SHA256
+	case CRYPTO_HASH_ALG_HMAC_SHA256:
+		a = "SHA256";
+		break;
+#endif /* CONFIG_SHA256 */
+#endif /* OPENSSL_NO_SHA256 */
+	default:
+		return NULL;
+	}
+
+	mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+	if (!mac)
+		return NULL;
+
+	params[0] = OSSL_PARAM_construct_utf8_string("digest", a, 0);
+	params[1] = OSSL_PARAM_construct_end();
+
+	ctx = os_zalloc(sizeof(*ctx));
+	if (!ctx)
+		return NULL;
+	ctx->ctx = EVP_MAC_CTX_new(mac);
+	if (!ctx->ctx) {
+		EVP_MAC_free(mac);
+		os_free(ctx);
+		return NULL;
+	}
+
+	if (EVP_MAC_init(ctx->ctx, key, key_len, params) != 1) {
+		EVP_MAC_CTX_free(ctx->ctx);
+		bin_clear_free(ctx, sizeof(*ctx));
+		EVP_MAC_free(mac);
+		return NULL;
+	}
+
+	EVP_MAC_free(mac);
+	return ctx;
+#else /* OpenSSL version >= 3.0 */
 	struct crypto_hash *ctx;
 	const EVP_MD *md;
 
@@ -1044,6 +1406,7 @@ struct crypto_hash * crypto_hash_init(enum crypto_hash_alg alg, const u8 *key,
 	}
 
 	return ctx;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
@@ -1051,12 +1414,49 @@ void crypto_hash_update(struct crypto_hash *ctx, const u8 *data, size_t len)
 {
 	if (ctx == NULL)
 		return;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC_update(ctx->ctx, data, len);
+#else /* OpenSSL version >= 3.0 */
 	HMAC_Update(ctx->ctx, data, len);
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	size_t mdlen;
+	int res;
+
+	if (!ctx)
+		return -2;
+
+	if (!mac || !len) {
+		EVP_MAC_CTX_free(ctx->ctx);
+		bin_clear_free(ctx, sizeof(*ctx));
+		return 0;
+	}
+
+	res = EVP_MAC_final(ctx->ctx, NULL, &mdlen, 0);
+	if (res != 1) {
+		EVP_MAC_CTX_free(ctx->ctx);
+		bin_clear_free(ctx, sizeof(*ctx));
+		return -1;
+	}
+	res = EVP_MAC_final(ctx->ctx, mac, &mdlen, mdlen);
+	EVP_MAC_CTX_free(ctx->ctx);
+	bin_clear_free(ctx, sizeof(*ctx));
+
+	if (TEST_FAIL())
+		return -1;
+
+	if (res == 1) {
+		*len = mdlen;
+		return 0;
+	}
+
+	return -1;
+#else /* OpenSSL version >= 3.0 */
 	unsigned int mdlen;
 	int res;
 
@@ -1083,8 +1483,147 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 	}
 
 	return -1;
+#endif /* OpenSSL version >= 3.0 */
 }
 
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+
+static int openssl_hmac_vector(char *digest, const u8 *key,
+			       size_t key_len, size_t num_elem,
+			       const u8 *addr[], const size_t *len, u8 *mac,
+			       unsigned int mdlen)
+{
+	EVP_MAC *hmac;
+	OSSL_PARAM params[2];
+	EVP_MAC_CTX *ctx;
+	size_t i, mlen;
+	int res;
+
+	if (TEST_FAIL())
+		return -1;
+
+	hmac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+	if (!hmac)
+		return -1;
+
+	params[0] = OSSL_PARAM_construct_utf8_string("digest", digest, 0);
+	params[1] = OSSL_PARAM_construct_end();
+
+	ctx = EVP_MAC_CTX_new(hmac);
+	EVP_MAC_free(hmac);
+	if (!ctx)
+		return -1;
+
+	if (EVP_MAC_init(ctx, key, key_len, params) != 1)
+		goto fail;
+
+	for (i = 0; i < num_elem; i++) {
+		if (EVP_MAC_update(ctx, addr[i], len[i]) != 1)
+			goto fail;
+	}
+
+	res = EVP_MAC_final(ctx, mac, &mlen, mdlen);
+	EVP_MAC_CTX_free(ctx);
+
+	return res == 1 ? 0 : -1;
+fail:
+	EVP_MAC_CTX_free(ctx);
+	return -1;
+}
+
+
+#ifndef CONFIG_FIPS
+
+int hmac_md5_vector(const u8 *key, size_t key_len, size_t num_elem,
+		    const u8 *addr[], const size_t *len, u8 *mac)
+{
+	return openssl_hmac_vector("MD5", key ,key_len, num_elem, addr, len,
+				   mac, 16);
+}
+
+
+int hmac_md5(const u8 *key, size_t key_len, const u8 *data, size_t data_len,
+	     u8 *mac)
+{
+	return hmac_md5_vector(key, key_len, 1, &data, &data_len, mac);
+}
+
+#endif /* CONFIG_FIPS */
+
+
+int hmac_sha1_vector(const u8 *key, size_t key_len, size_t num_elem,
+		     const u8 *addr[], const size_t *len, u8 *mac)
+{
+	return openssl_hmac_vector("SHA1", key, key_len, num_elem, addr,
+				   len, mac, 20);
+}
+
+
+int hmac_sha1(const u8 *key, size_t key_len, const u8 *data, size_t data_len,
+	       u8 *mac)
+{
+	return hmac_sha1_vector(key, key_len, 1, &data, &data_len, mac);
+}
+
+
+#ifdef CONFIG_SHA256
+
+int hmac_sha256_vector(const u8 *key, size_t key_len, size_t num_elem,
+		       const u8 *addr[], const size_t *len, u8 *mac)
+{
+	return openssl_hmac_vector("SHA256", key, key_len, num_elem, addr,
+				   len, mac, 32);
+}
+
+
+int hmac_sha256(const u8 *key, size_t key_len, const u8 *data,
+		size_t data_len, u8 *mac)
+{
+	return hmac_sha256_vector(key, key_len, 1, &data, &data_len, mac);
+}
+
+#endif /* CONFIG_SHA256 */
+
+
+#ifdef CONFIG_SHA384
+
+int hmac_sha384_vector(const u8 *key, size_t key_len, size_t num_elem,
+		       const u8 *addr[], const size_t *len, u8 *mac)
+{
+	return openssl_hmac_vector("SHA384", key, key_len, num_elem, addr,
+				   len, mac, 48);
+}
+
+
+int hmac_sha384(const u8 *key, size_t key_len, const u8 *data,
+		size_t data_len, u8 *mac)
+{
+	return hmac_sha384_vector(key, key_len, 1, &data, &data_len, mac);
+}
+
+#endif /* CONFIG_SHA384 */
+
+
+#ifdef CONFIG_SHA512
+
+int hmac_sha512_vector(const u8 *key, size_t key_len, size_t num_elem,
+		       const u8 *addr[], const size_t *len, u8 *mac)
+{
+	return openssl_hmac_vector("SHA512", key, key_len, num_elem, addr,
+				   len, mac, 64);
+}
+
+
+int hmac_sha512(const u8 *key, size_t key_len, const u8 *data,
+		size_t data_len, u8 *mac)
+{
+	return hmac_sha512_vector(key, key_len, 1, &data, &data_len, mac);
+}
+
+#endif /* CONFIG_SHA512 */
+
+#else /* OpenSSL version >= 3.0 */
 
 static int openssl_hmac_vector(const EVP_MD *type, const u8 *key,
 			       size_t key_len, size_t num_elem,
@@ -1133,16 +1672,6 @@ int hmac_md5(const u8 *key, size_t key_len, const u8 *data, size_t data_len,
 }
 
 #endif /* CONFIG_FIPS */
-
-
-int pbkdf2_sha1(const char *passphrase, const u8 *ssid, size_t ssid_len,
-		int iterations, u8 *buf, size_t buflen)
-{
-	if (PKCS5_PBKDF2_HMAC_SHA1(passphrase, os_strlen(passphrase), ssid,
-				   ssid_len, iterations, buflen, buf) != 1)
-		return -1;
-	return 0;
-}
 
 
 int hmac_sha1_vector(const u8 *key, size_t key_len, size_t num_elem,
@@ -1216,6 +1745,18 @@ int hmac_sha512(const u8 *key, size_t key_len, const u8 *data,
 
 #endif /* CONFIG_SHA512 */
 
+#endif /* OpenSSL version >= 3.0 */
+
+
+int pbkdf2_sha1(const char *passphrase, const u8 *ssid, size_t ssid_len,
+		int iterations, u8 *buf, size_t buflen)
+{
+	if (PKCS5_PBKDF2_HMAC_SHA1(passphrase, os_strlen(passphrase), ssid,
+				   ssid_len, iterations, buflen, buf) != 1)
+		return -1;
+	return 0;
+}
+
 
 int crypto_get_random(void *buf, size_t len)
 {
@@ -1225,10 +1766,49 @@ int crypto_get_random(void *buf, size_t len)
 }
 
 
-#ifdef CONFIG_OPENSSL_CMAC
 int omac1_aes_vector(const u8 *key, size_t key_len, size_t num_elem,
 		     const u8 *addr[], const size_t *len, u8 *mac)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC_CTX *ctx = NULL;
+	EVP_MAC *emac;
+	int ret = -1;
+	size_t outlen, i;
+	OSSL_PARAM params[2];
+	char *cipher = NULL;
+
+	if (TEST_FAIL())
+		return -1;
+
+	emac = EVP_MAC_fetch(NULL, "CMAC", NULL);
+
+	if (key_len == 32)
+		cipher = "aes-256-cbc";
+	else if (key_len == 24)
+		cipher = "aes-192-cbc";
+	else if (key_len == 16)
+		cipher = "aes-128-cbc";
+
+	params[0] = OSSL_PARAM_construct_utf8_string("cipher", cipher, 0);
+	params[1] = OSSL_PARAM_construct_end();
+
+	if (!emac || !cipher ||
+	    !(ctx = EVP_MAC_CTX_new(emac)) ||
+	    EVP_MAC_init(ctx, key, key_len, params) != 1)
+		goto fail;
+
+	for (i = 0; i < num_elem; i++) {
+		if (!EVP_MAC_update(ctx, addr[i], len[i]))
+			goto fail;
+	}
+	if (EVP_MAC_final(ctx, mac, &outlen, 16) != 1 || outlen != 16)
+		goto fail;
+
+	ret = 0;
+fail:
+	EVP_MAC_CTX_free(ctx);
+	return ret;
+#else /* OpenSSL version >= 3.0 */
 	CMAC_CTX *ctx;
 	int ret = -1;
 	size_t outlen, i;
@@ -1242,6 +1822,9 @@ int omac1_aes_vector(const u8 *key, size_t key_len, size_t num_elem,
 
 	if (key_len == 32) {
 		if (!CMAC_Init(ctx, key, 32, EVP_aes_256_cbc(), NULL))
+			goto fail;
+	} else if (key_len == 24) {
+		if (!CMAC_Init(ctx, key, 24, EVP_aes_192_cbc(), NULL))
 			goto fail;
 	} else if (key_len == 16) {
 		if (!CMAC_Init(ctx, key, 16, EVP_aes_128_cbc(), NULL))
@@ -1260,6 +1843,7 @@ int omac1_aes_vector(const u8 *key, size_t key_len, size_t num_elem,
 fail:
 	CMAC_CTX_free(ctx);
 	return ret;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
@@ -1280,7 +1864,6 @@ int omac1_aes_256(const u8 *key, const u8 *data, size_t data_len, u8 *mac)
 {
 	return omac1_aes_vector(key, 32, 1, &data, &data_len, mac);
 }
-#endif /* CONFIG_OPENSSL_CMAC */
 
 
 struct crypto_bignum * crypto_bignum_init(void)
@@ -1640,51 +2223,51 @@ struct crypto_ec {
 	BIGNUM *b;
 };
 
+
+static int crypto_ec_group_2_nid(int group)
+{
+	/* Map from IANA registry for IKE D-H groups to OpenSSL NID */
+	switch (group) {
+	case 19:
+		return NID_X9_62_prime256v1;
+	case 20:
+		return NID_secp384r1;
+	case 21:
+		return NID_secp521r1;
+	case 25:
+		return NID_X9_62_prime192v1;
+	case 26:
+		return NID_secp224r1;
+#ifdef NID_brainpoolP224r1
+	case 27:
+		return NID_brainpoolP224r1;
+#endif /* NID_brainpoolP224r1 */
+#ifdef NID_brainpoolP256r1
+	case 28:
+		return NID_brainpoolP256r1;
+#endif /* NID_brainpoolP256r1 */
+#ifdef NID_brainpoolP384r1
+	case 29:
+		return NID_brainpoolP384r1;
+#endif /* NID_brainpoolP384r1 */
+#ifdef NID_brainpoolP512r1
+	case 30:
+		return NID_brainpoolP512r1;
+#endif /* NID_brainpoolP512r1 */
+	default:
+		return -1;
+	}
+}
+
+
 struct crypto_ec * crypto_ec_init(int group)
 {
 	struct crypto_ec *e;
 	int nid;
 
-	/* Map from IANA registry for IKE D-H groups to OpenSSL NID */
-	switch (group) {
-	case 19:
-		nid = NID_X9_62_prime256v1;
-		break;
-	case 20:
-		nid = NID_secp384r1;
-		break;
-	case 21:
-		nid = NID_secp521r1;
-		break;
-	case 25:
-		nid = NID_X9_62_prime192v1;
-		break;
-	case 26:
-		nid = NID_secp224r1;
-		break;
-#ifdef NID_brainpoolP224r1
-	case 27:
-		nid = NID_brainpoolP224r1;
-		break;
-#endif /* NID_brainpoolP224r1 */
-#ifdef NID_brainpoolP256r1
-	case 28:
-		nid = NID_brainpoolP256r1;
-		break;
-#endif /* NID_brainpoolP256r1 */
-#ifdef NID_brainpoolP384r1
-	case 29:
-		nid = NID_brainpoolP384r1;
-		break;
-#endif /* NID_brainpoolP384r1 */
-#ifdef NID_brainpoolP512r1
-	case 30:
-		nid = NID_brainpoolP512r1;
-		break;
-#endif /* NID_brainpoolP512r1 */
-	default:
+	nid = crypto_ec_group_2_nid(group);
+	if (nid < 0)
 		return NULL;
-	}
 
 	e = os_zalloc(sizeof(*e));
 	if (e == NULL)
@@ -1699,7 +2282,7 @@ struct crypto_ec * crypto_ec_init(int group)
 	e->b = BN_new();
 	if (e->group == NULL || e->bnctx == NULL || e->prime == NULL ||
 	    e->order == NULL || e->a == NULL || e->b == NULL ||
-	    !EC_GROUP_get_curve_GFp(e->group, e->prime, e->a, e->b, e->bnctx) ||
+	    !EC_GROUP_get_curve(e->group, e->prime, e->a, e->b, e->bnctx) ||
 	    !EC_GROUP_get_order(e->group, e->order, e->bnctx)) {
 		crypto_ec_deinit(e);
 		e = NULL;
@@ -1775,6 +2358,13 @@ const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
 }
 
 
+const struct crypto_ec_point * crypto_ec_get_generator(struct crypto_ec *e)
+{
+	return (const struct crypto_ec_point *)
+		EC_GROUP_get0_generator(e->group);
+}
+
+
 void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
 {
 	if (clear)
@@ -1787,10 +2377,10 @@ void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
 int crypto_ec_point_x(struct crypto_ec *e, const struct crypto_ec_point *p,
 		      struct crypto_bignum *x)
 {
-	return EC_POINT_get_affine_coordinates_GFp(e->group,
-						   (const EC_POINT *) p,
-						   (BIGNUM *) x, NULL,
-						   e->bnctx) == 1 ? 0 : -1;
+	return EC_POINT_get_affine_coordinates(e->group,
+					       (const EC_POINT *) p,
+					       (BIGNUM *) x, NULL,
+					       e->bnctx) == 1 ? 0 : -1;
 }
 
 
@@ -1808,8 +2398,8 @@ int crypto_ec_point_to_bin(struct crypto_ec *e,
 	y_bn = BN_new();
 
 	if (x_bn && y_bn &&
-	    EC_POINT_get_affine_coordinates_GFp(e->group, (EC_POINT *) point,
-						x_bn, y_bn, e->bnctx)) {
+	    EC_POINT_get_affine_coordinates(e->group, (EC_POINT *) point,
+					    x_bn, y_bn, e->bnctx)) {
 		if (x) {
 			crypto_bignum_to_bin((struct crypto_bignum *) x_bn,
 					     x, len, len);
@@ -1847,8 +2437,7 @@ struct crypto_ec_point * crypto_ec_point_from_bin(struct crypto_ec *e,
 		return NULL;
 	}
 
-	if (!EC_POINT_set_affine_coordinates_GFp(e->group, elem, x, y,
-						 e->bnctx)) {
+	if (!EC_POINT_set_affine_coordinates(e->group, elem, x, y, e->bnctx)) {
 		EC_POINT_clear_free(elem);
 		elem = NULL;
 	}
@@ -1891,48 +2480,27 @@ int crypto_ec_point_invert(struct crypto_ec *e, struct crypto_ec_point *p)
 }
 
 
-int crypto_ec_point_solve_y_coord(struct crypto_ec *e,
-				  struct crypto_ec_point *p,
-				  const struct crypto_bignum *x, int y_bit)
-{
-	if (TEST_FAIL())
-		return -1;
-	if (!EC_POINT_set_compressed_coordinates_GFp(e->group, (EC_POINT *) p,
-						     (const BIGNUM *) x, y_bit,
-						     e->bnctx) ||
-	    !EC_POINT_is_on_curve(e->group, (EC_POINT *) p, e->bnctx))
-		return -1;
-	return 0;
-}
-
-
 struct crypto_bignum *
 crypto_ec_point_compute_y_sqr(struct crypto_ec *e,
 			      const struct crypto_bignum *x)
 {
-	BIGNUM *tmp, *tmp2, *y_sqr = NULL;
+	BIGNUM *tmp;
 
 	if (TEST_FAIL())
 		return NULL;
 
 	tmp = BN_new();
-	tmp2 = BN_new();
 
-	/* y^2 = x^3 + ax + b */
-	if (tmp && tmp2 &&
+	/* y^2 = x^3 + ax + b = (x^2 + a)x + b */
+	if (tmp &&
 	    BN_mod_sqr(tmp, (const BIGNUM *) x, e->prime, e->bnctx) &&
+	    BN_mod_add_quick(tmp, e->a, tmp, e->prime) &&
 	    BN_mod_mul(tmp, tmp, (const BIGNUM *) x, e->prime, e->bnctx) &&
-	    BN_mod_mul(tmp2, e->a, (const BIGNUM *) x, e->prime, e->bnctx) &&
-	    BN_mod_add_quick(tmp2, tmp2, tmp, e->prime) &&
-	    BN_mod_add_quick(tmp2, tmp2, e->b, e->prime)) {
-		y_sqr = tmp2;
-		tmp2 = NULL;
-	}
+	    BN_mod_add_quick(tmp, tmp, e->b, e->prime))
+		return (struct crypto_bignum *) tmp;
 
 	BN_clear_free(tmp);
-	BN_clear_free(tmp2);
-
-	return (struct crypto_bignum *) y_sqr;
+	return NULL;
 }
 
 
@@ -1960,6 +2528,35 @@ int crypto_ec_point_cmp(const struct crypto_ec *e,
 }
 
 
+void crypto_ec_point_debug_print(const struct crypto_ec *e,
+				 const struct crypto_ec_point *p,
+				 const char *title)
+{
+	BIGNUM *x, *y;
+	char *x_str = NULL, *y_str = NULL;
+
+	x = BN_new();
+	y = BN_new();
+	if (!x || !y ||
+	    EC_POINT_get_affine_coordinates(e->group, (const EC_POINT *) p,
+					    x, y, e->bnctx) != 1)
+		goto fail;
+
+	x_str = BN_bn2hex(x);
+	y_str = BN_bn2hex(y);
+	if (!x_str || !y_str)
+		goto fail;
+
+	wpa_printf(MSG_DEBUG, "%s (%s,%s)", title, x_str, y_str);
+
+fail:
+	OPENSSL_free(x_str);
+	OPENSSL_free(y_str);
+	BN_free(x);
+	BN_free(y);
+}
+
+
 struct crypto_ecdh {
 	struct crypto_ec *ec;
 	EVP_PKEY *pkey;
@@ -1967,6 +2564,33 @@ struct crypto_ecdh {
 
 struct crypto_ecdh * crypto_ecdh_init(int group)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	struct crypto_ecdh *ecdh;
+	const char *name;
+
+	ecdh = os_zalloc(sizeof(*ecdh));
+	if (!ecdh)
+		goto fail;
+
+	ecdh->ec = crypto_ec_init(group);
+	if (!ecdh->ec)
+		goto fail;
+
+	name = OSSL_EC_curve_nid2name(ecdh->ec->nid);
+	if (!name)
+		goto fail;
+
+	ecdh->pkey = EVP_EC_gen(name);
+	if (!ecdh->pkey)
+		goto fail;
+
+done:
+	return ecdh;
+fail:
+	crypto_ecdh_deinit(ecdh);
+	ecdh = NULL;
+	goto done;
+#else /* OpenSSL version >= 3.0 */
 	struct crypto_ecdh *ecdh;
 	EVP_PKEY *params = NULL;
 	EC_KEY *ec_params = NULL;
@@ -2021,11 +2645,81 @@ fail:
 	crypto_ecdh_deinit(ecdh);
 	ecdh = NULL;
 	goto done;
+#endif /* OpenSSL version >= 3.0 */
+}
+
+
+struct crypto_ecdh * crypto_ecdh_init2(int group, struct crypto_ec_key *own_key)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	struct crypto_ecdh *ecdh;
+
+	ecdh = os_zalloc(sizeof(*ecdh));
+	if (!ecdh)
+		goto fail;
+
+	ecdh->ec = crypto_ec_init(group);
+	if (!ecdh->ec)
+		goto fail;
+
+	ecdh->pkey = EVP_PKEY_dup((EVP_PKEY *) own_key);
+	if (!ecdh->pkey)
+		goto fail;
+
+	return ecdh;
+fail:
+	crypto_ecdh_deinit(ecdh);
+	return NULL;
+#else /* OpenSSL version >= 3.0 */
+	struct crypto_ecdh *ecdh;
+
+	ecdh = os_zalloc(sizeof(*ecdh));
+	if (!ecdh)
+		goto fail;
+
+	ecdh->ec = crypto_ec_init(group);
+	if (!ecdh->ec)
+		goto fail;
+
+	ecdh->pkey = EVP_PKEY_new();
+	if (!ecdh->pkey ||
+	    EVP_PKEY_assign_EC_KEY(ecdh->pkey,
+				   EVP_PKEY_get1_EC_KEY((EVP_PKEY *) own_key))
+	    != 1)
+		goto fail;
+
+	return ecdh;
+fail:
+	crypto_ecdh_deinit(ecdh);
+	return NULL;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 struct wpabuf * crypto_ecdh_get_pubkey(struct crypto_ecdh *ecdh, int inc_y)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	struct wpabuf *buf = NULL;
+	unsigned char *pub;
+	size_t len, exp_len;
+
+	len = EVP_PKEY_get1_encoded_public_key(ecdh->pkey, &pub);
+	if (len == 0)
+		return NULL;
+
+	/* Encoded using SECG SEC 1, Sec. 2.3.4 format */
+	exp_len = 1 + 2 * crypto_ec_prime_len(ecdh->ec);
+	if (len != exp_len) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL:%s: Unexpected encoded public key length %zu (expected %zu)",
+			   __func__, len, exp_len);
+		goto fail;
+	}
+	buf = wpabuf_alloc_copy(pub + 1, inc_y ? len - 1 : len / 2);
+fail:
+	OPENSSL_free(pub);
+	return buf;
+#else /* OpenSSL version >= 3.0 */
 	struct wpabuf *buf = NULL;
 	EC_KEY *eckey;
 	const EC_POINT *pubkey;
@@ -2051,10 +2745,10 @@ struct wpabuf * crypto_ecdh_get_pubkey(struct crypto_ecdh *ecdh, int inc_y)
 	if (!x || !buf)
 		goto fail;
 
-	if (EC_POINT_get_affine_coordinates_GFp(ecdh->ec->group, pubkey,
-						x, y, ecdh->ec->bnctx) != 1) {
+	if (EC_POINT_get_affine_coordinates(ecdh->ec->group, pubkey,
+					    x, y, ecdh->ec->bnctx) != 1) {
 		wpa_printf(MSG_ERROR,
-			   "OpenSSL: EC_POINT_get_affine_coordinates_GFp failed: %s",
+			   "OpenSSL: EC_POINT_get_affine_coordinates failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
 		goto fail;
 	}
@@ -2081,12 +2775,57 @@ fail:
 	wpabuf_free(buf);
 	buf = NULL;
 	goto done;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
 struct wpabuf * crypto_ecdh_set_peerkey(struct crypto_ecdh *ecdh, int inc_y,
 					const u8 *key, size_t len)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *peerkey = EVP_PKEY_new();
+	EVP_PKEY_CTX *ctx;
+	size_t res_len;
+	struct wpabuf *res = NULL;
+	u8 *peer;
+
+	/* Encode using SECG SEC 1, Sec. 2.3.4 format */
+	peer = os_malloc(1 + len);
+	if (!peer)
+		return NULL;
+	peer[0] = inc_y ? 0x04 : 0x02;
+	os_memcpy(peer + 1, key, len);
+
+	if (!peerkey ||
+	    EVP_PKEY_copy_parameters(peerkey, ecdh->pkey) != 1 ||
+	    EVP_PKEY_set1_encoded_public_key(peerkey, peer, 1 + len) != 1) {
+		wpa_printf(MSG_INFO, "OpenSSL: EVP_PKEY_set1_encoded_public_key failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		EVP_PKEY_free(peerkey);
+		os_free(peer);
+		return NULL;
+	}
+	os_free(peer);
+
+	ctx = EVP_PKEY_CTX_new(ecdh->pkey, NULL);
+	if (!ctx ||
+	    EVP_PKEY_derive_init(ctx) != 1 ||
+	    EVP_PKEY_derive_set_peer(ctx, peerkey) != 1 ||
+	    EVP_PKEY_derive(ctx, NULL, &res_len) != 1 ||
+	    !(res = wpabuf_alloc(res_len)) ||
+	    EVP_PKEY_derive(ctx, wpabuf_mhead(res), &res_len) != 1) {
+		wpa_printf(MSG_INFO, "OpenSSL: EVP_PKEY_derive failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		wpabuf_free(res);
+		res = NULL;
+	} else {
+		wpabuf_put(res, res_len);
+	}
+
+	EVP_PKEY_free(peerkey);
+	EVP_PKEY_CTX_free(ctx);
+	return res;
+#else /* OpenSSL version >= 3.0 */
 	BIGNUM *x, *y = NULL;
 	EVP_PKEY_CTX *ctx = NULL;
 	EVP_PKEY *peerkey = NULL;
@@ -2104,19 +2843,18 @@ struct wpabuf * crypto_ecdh_set_peerkey(struct crypto_ecdh *ecdh, int inc_y,
 		y = BN_bin2bn(key + len / 2, len / 2, NULL);
 		if (!y)
 			goto fail;
-		if (!EC_POINT_set_affine_coordinates_GFp(ecdh->ec->group, pub,
-							 x, y,
-							 ecdh->ec->bnctx)) {
+		if (!EC_POINT_set_affine_coordinates(ecdh->ec->group, pub,
+						     x, y, ecdh->ec->bnctx)) {
 			wpa_printf(MSG_ERROR,
-				   "OpenSSL: EC_POINT_set_affine_coordinates_GFp failed: %s",
+				   "OpenSSL: EC_POINT_set_affine_coordinates failed: %s",
 				   ERR_error_string(ERR_get_error(), NULL));
 			goto fail;
 		}
-	} else if (!EC_POINT_set_compressed_coordinates_GFp(ecdh->ec->group,
-							    pub, x, 0,
-							    ecdh->ec->bnctx)) {
+	} else if (!EC_POINT_set_compressed_coordinates(ecdh->ec->group,
+							pub, x, 0,
+							ecdh->ec->bnctx)) {
 		wpa_printf(MSG_ERROR,
-			   "OpenSSL: EC_POINT_set_compressed_coordinates_GFp failed: %s",
+			   "OpenSSL: EC_POINT_set_compressed_coordinates failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
 		goto fail;
 	}
@@ -2176,6 +2914,7 @@ fail:
 	wpabuf_free(secret);
 	secret = NULL;
 	goto done;
+#endif /* OpenSSL version >= 3.0 */
 }
 
 
@@ -2195,83 +2934,348 @@ size_t crypto_ecdh_prime_len(struct crypto_ecdh *ecdh)
 }
 
 
-struct crypto_ec_key {
-	EVP_PKEY *pkey;
-	EC_KEY *eckey;
-};
-
-
 struct crypto_ec_key * crypto_ec_key_parse_priv(const u8 *der, size_t der_len)
 {
-	struct crypto_ec_key *key;
+	EVP_PKEY *pkey = NULL;
+	EC_KEY *eckey;
 
-	key = os_zalloc(sizeof(*key));
-	if (!key)
-		return NULL;
-
-	key->eckey = d2i_ECPrivateKey(NULL, &der, der_len);
-	if (!key->eckey) {
+	eckey = d2i_ECPrivateKey(NULL, &der, der_len);
+	if (!eckey) {
 		wpa_printf(MSG_INFO, "OpenSSL: d2i_ECPrivateKey() failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
 		goto fail;
 	}
-	EC_KEY_set_conv_form(key->eckey, POINT_CONVERSION_COMPRESSED);
+	EC_KEY_set_conv_form(eckey, POINT_CONVERSION_COMPRESSED);
 
-	key->pkey = EVP_PKEY_new();
-	if (!key->pkey || EVP_PKEY_assign_EC_KEY(key->pkey, key->eckey) != 1) {
-		EC_KEY_free(key->eckey);
-		key->eckey = NULL;
+	pkey = EVP_PKEY_new();
+	if (!pkey || EVP_PKEY_assign_EC_KEY(pkey, eckey) != 1) {
+		EC_KEY_free(eckey);
 		goto fail;
 	}
 
-	return key;
+	return (struct crypto_ec_key *) pkey;
 fail:
-	crypto_ec_key_deinit(key);
+	crypto_ec_key_deinit((struct crypto_ec_key *) pkey);
 	return NULL;
 }
 
 
 struct crypto_ec_key * crypto_ec_key_parse_pub(const u8 *der, size_t der_len)
 {
-	struct crypto_ec_key *key;
+	EVP_PKEY *pkey;
 
-	key = os_zalloc(sizeof(*key));
-	if (!key)
-		return NULL;
-
-	key->pkey = d2i_PUBKEY(NULL, &der, der_len);
-	if (!key->pkey) {
+	pkey = d2i_PUBKEY(NULL, &der, der_len);
+	if (!pkey) {
 		wpa_printf(MSG_INFO, "OpenSSL: d2i_PUBKEY() failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
 		goto fail;
 	}
 
-	key->eckey = EVP_PKEY_get0_EC_KEY(key->pkey);
-	if (!key->eckey)
+	/* Ensure this is an EC key */
+	if (!EVP_PKEY_get0_EC_KEY(pkey))
 		goto fail;
-	return key;
+	return (struct crypto_ec_key *) pkey;
 fail:
-	crypto_ec_key_deinit(key);
+	crypto_ec_key_deinit((struct crypto_ec_key *) pkey);
 	return NULL;
+}
+
+
+struct crypto_ec_key * crypto_ec_key_set_pub(int group, const u8 *buf_x,
+					     const u8 *buf_y, size_t len)
+{
+	EC_KEY *eckey = NULL;
+	EVP_PKEY *pkey = NULL;
+	EC_GROUP *ec_group = NULL;
+	BN_CTX *ctx;
+	EC_POINT *point = NULL;
+	BIGNUM *x = NULL, *y = NULL;
+	int nid;
+
+	if (!buf_x || !buf_y)
+		return NULL;
+
+	nid = crypto_ec_group_2_nid(group);
+	if (nid < 0) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Unsupported group %d", group);
+		return NULL;
+	}
+
+	ctx = BN_CTX_new();
+	if (!ctx)
+		goto fail;
+
+	ec_group = EC_GROUP_new_by_curve_name(nid);
+	if (!ec_group)
+		goto fail;
+
+	x = BN_bin2bn(buf_x, len, NULL);
+	y = BN_bin2bn(buf_y, len, NULL);
+	point = EC_POINT_new(ec_group);
+	if (!x || !y || !point)
+		goto fail;
+
+	if (!EC_POINT_set_affine_coordinates(ec_group, point, x, y, ctx)) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: EC_POINT_set_affine_coordinates failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+
+	if (!EC_POINT_is_on_curve(ec_group, point, ctx) ||
+	    EC_POINT_is_at_infinity(ec_group, point)) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Invalid point");
+		goto fail;
+	}
+
+	eckey = EC_KEY_new();
+	if (!eckey ||
+	    EC_KEY_set_group(eckey, ec_group) != 1 ||
+	    EC_KEY_set_public_key(eckey, point) != 1) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to set EC_KEY: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+	EC_KEY_set_asn1_flag(eckey, OPENSSL_EC_NAMED_CURVE);
+
+	pkey = EVP_PKEY_new();
+	if (!pkey || EVP_PKEY_assign_EC_KEY(pkey, eckey) != 1) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Could not create EVP_PKEY");
+		goto fail;
+	}
+
+out:
+	EC_GROUP_free(ec_group);
+	BN_free(x);
+	BN_free(y);
+	EC_POINT_free(point);
+	BN_CTX_free(ctx);
+	return (struct crypto_ec_key *) pkey;
+
+fail:
+	EC_KEY_free(eckey);
+	EVP_PKEY_free(pkey);
+	pkey = NULL;
+	goto out;
+}
+
+
+struct crypto_ec_key *
+crypto_ec_key_set_pub_point(struct crypto_ec *ec,
+			    const struct crypto_ec_point *pub)
+{
+	EC_KEY *eckey;
+	EVP_PKEY *pkey = NULL;
+
+	eckey = EC_KEY_new();
+	if (!eckey ||
+	    EC_KEY_set_group(eckey, ec->group) != 1 ||
+	    EC_KEY_set_public_key(eckey, (const EC_POINT *) pub) != 1) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to set EC_KEY: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+	EC_KEY_set_asn1_flag(eckey, OPENSSL_EC_NAMED_CURVE);
+
+	pkey = EVP_PKEY_new();
+	if (!pkey || EVP_PKEY_assign_EC_KEY(pkey, eckey) != 1) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Could not create EVP_PKEY");
+		goto fail;
+	}
+
+out:
+	return (struct crypto_ec_key *) pkey;
+
+fail:
+	EVP_PKEY_free(pkey);
+	EC_KEY_free(eckey);
+	pkey = NULL;
+	goto out;
+}
+
+
+struct crypto_ec_key * crypto_ec_key_gen(int group)
+{
+	EVP_PKEY_CTX *kctx = NULL;
+	EC_KEY *ec_params = NULL, *eckey;
+	EVP_PKEY *params = NULL, *key = NULL;
+	int nid;
+
+	nid = crypto_ec_group_2_nid(group);
+	if (nid < 0) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Unsupported group %d", group);
+		return NULL;
+	}
+
+	ec_params = EC_KEY_new_by_curve_name(nid);
+	if (!ec_params) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to generate EC_KEY parameters");
+		goto fail;
+	}
+	EC_KEY_set_asn1_flag(ec_params, OPENSSL_EC_NAMED_CURVE);
+	params = EVP_PKEY_new();
+	if (!params || EVP_PKEY_set1_EC_KEY(params, ec_params) != 1) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to generate EVP_PKEY parameters");
+		goto fail;
+	}
+
+	kctx = EVP_PKEY_CTX_new(params, NULL);
+	if (!kctx ||
+	    EVP_PKEY_keygen_init(kctx) != 1 ||
+	    EVP_PKEY_keygen(kctx, &key) != 1) {
+		wpa_printf(MSG_ERROR, "OpenSSL: Failed to generate EC key");
+		key = NULL;
+		goto fail;
+	}
+
+	eckey = EVP_PKEY_get1_EC_KEY(key);
+	if (!eckey) {
+		key = NULL;
+		goto fail;
+	}
+	EC_KEY_set_conv_form(eckey, POINT_CONVERSION_COMPRESSED);
+	EC_KEY_free(eckey);
+
+fail:
+	EC_KEY_free(ec_params);
+	EVP_PKEY_free(params);
+	EVP_PKEY_CTX_free(kctx);
+	return (struct crypto_ec_key *) key;
 }
 
 
 void crypto_ec_key_deinit(struct crypto_ec_key *key)
 {
-	if (key) {
-		EVP_PKEY_free(key->pkey);
-		os_free(key);
-	}
+	EVP_PKEY_free((EVP_PKEY *) key);
 }
+
+
+#ifdef OPENSSL_IS_BORINGSSL
+
+/* BoringSSL version of i2d_PUBKEY() always outputs public EC key using
+ * uncompressed form so define a custom function to export EC pubkey using
+ * the compressed format that is explicitly required for some protocols. */
+
+#include <openssl/asn1.h>
+#include <openssl/asn1t.h>
+
+typedef struct {
+	/* AlgorithmIdentifier ecPublicKey with optional parameters present
+	 * as an OID identifying the curve */
+	X509_ALGOR *alg;
+	/* Compressed format public key per ANSI X9.63 */
+	ASN1_BIT_STRING *pub_key;
+} EC_COMP_PUBKEY;
+
+ASN1_SEQUENCE(EC_COMP_PUBKEY) = {
+	ASN1_SIMPLE(EC_COMP_PUBKEY, alg, X509_ALGOR),
+	ASN1_SIMPLE(EC_COMP_PUBKEY, pub_key, ASN1_BIT_STRING)
+} ASN1_SEQUENCE_END(EC_COMP_PUBKEY);
+
+IMPLEMENT_ASN1_FUNCTIONS(EC_COMP_PUBKEY);
+
+#endif /* OPENSSL_IS_BORINGSSL */
 
 
 struct wpabuf * crypto_ec_key_get_subject_public_key(struct crypto_ec_key *key)
 {
+#ifdef OPENSSL_IS_BORINGSSL
+	unsigned char *der = NULL;
+	int der_len;
+	const EC_KEY *eckey;
+	struct wpabuf *ret = NULL;
+	size_t len;
+	const EC_GROUP *group;
+	const EC_POINT *point;
+	BN_CTX *ctx;
+	EC_COMP_PUBKEY *pubkey = NULL;
+	int nid;
+
+	ctx = BN_CTX_new();
+	eckey = EVP_PKEY_get0_EC_KEY((EVP_PKEY *) key);
+	if (!ctx || !eckey)
+		goto fail;
+
+	group = EC_KEY_get0_group(eckey);
+	point = EC_KEY_get0_public_key(eckey);
+	if (!group || !point)
+		goto fail;
+	nid = EC_GROUP_get_curve_name(group);
+
+	pubkey = EC_COMP_PUBKEY_new();
+	if (!pubkey ||
+	    X509_ALGOR_set0(pubkey->alg, OBJ_nid2obj(EVP_PKEY_EC),
+			    V_ASN1_OBJECT, (void *) OBJ_nid2obj(nid)) != 1)
+		goto fail;
+
+	len = EC_POINT_point2oct(group, point, POINT_CONVERSION_COMPRESSED,
+				 NULL, 0, ctx);
+	if (len == 0)
+		goto fail;
+
+	der = OPENSSL_malloc(len);
+	if (!der)
+		goto fail;
+	len = EC_POINT_point2oct(group, point, POINT_CONVERSION_COMPRESSED,
+				 der, len, ctx);
+
+	OPENSSL_free(pubkey->pub_key->data);
+	pubkey->pub_key->data = der;
+	der = NULL;
+	pubkey->pub_key->length = len;
+	/* No unused bits */
+	pubkey->pub_key->flags &= ~(ASN1_STRING_FLAG_BITS_LEFT | 0x07);
+	pubkey->pub_key->flags |= ASN1_STRING_FLAG_BITS_LEFT;
+
+	der_len = i2d_EC_COMP_PUBKEY(pubkey, &der);
+	if (der_len <= 0) {
+		wpa_printf(MSG_ERROR,
+			   "BoringSSL: Failed to build DER encoded public key");
+		goto fail;
+	}
+
+	ret = wpabuf_alloc_copy(der, der_len);
+fail:
+	EC_COMP_PUBKEY_free(pubkey);
+	OPENSSL_free(der);
+	BN_CTX_free(ctx);
+	return ret;
+#else /* OPENSSL_IS_BORINGSSL */
 	unsigned char *der = NULL;
 	int der_len;
 	struct wpabuf *buf;
+	EC_KEY *eckey;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *tmp;
+#endif /* OpenSSL version >= 3.0 */
 
-	der_len = i2d_PUBKEY(key->pkey, &der);
+	eckey = EVP_PKEY_get1_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return NULL;
+
+	/* For now, all users expect COMPRESSED form */
+	EC_KEY_set_conv_form(eckey, POINT_CONVERSION_COMPRESSED);
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	tmp = EVP_PKEY_new();
+	if (!tmp)
+		return NULL;
+	if (EVP_PKEY_set1_EC_KEY(tmp, eckey) != 1) {
+		EVP_PKEY_free(tmp);
+		return NULL;
+	}
+	key = (struct crypto_ec_key *) tmp;
+#endif /* OpenSSL version >= 3.0 */
+
+	der_len = i2d_PUBKEY((EVP_PKEY *) key, &der);
+	EC_KEY_free(eckey);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY_free(tmp);
+#endif /* OpenSSL version >= 3.0 */
 	if (der_len <= 0) {
 		wpa_printf(MSG_INFO, "OpenSSL: i2d_PUBKEY() failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
@@ -2281,6 +3285,112 @@ struct wpabuf * crypto_ec_key_get_subject_public_key(struct crypto_ec_key *key)
 	buf = wpabuf_alloc_copy(der, der_len);
 	OPENSSL_free(der);
 	return buf;
+#endif /* OPENSSL_IS_BORINGSSL */
+}
+
+
+struct wpabuf * crypto_ec_key_get_ecprivate_key(struct crypto_ec_key *key,
+						bool include_pub)
+{
+	EC_KEY *eckey;
+	unsigned char *der = NULL;
+	int der_len;
+	struct wpabuf *buf;
+	unsigned int key_flags;
+
+	eckey = EVP_PKEY_get1_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return NULL;
+
+	key_flags = EC_KEY_get_enc_flags(eckey);
+	if (include_pub)
+		key_flags &= ~EC_PKEY_NO_PUBKEY;
+	else
+		key_flags |= EC_PKEY_NO_PUBKEY;
+	EC_KEY_set_enc_flags(eckey, key_flags);
+
+	EC_KEY_set_conv_form(eckey, POINT_CONVERSION_UNCOMPRESSED);
+
+	der_len = i2d_ECPrivateKey(eckey, &der);
+	EC_KEY_free(eckey);
+	if (der_len <= 0)
+		return NULL;
+	buf = wpabuf_alloc_copy(der, der_len);
+	OPENSSL_free(der);
+
+	return buf;
+}
+
+
+struct wpabuf * crypto_ec_key_get_pubkey_point(struct crypto_ec_key *key,
+					       int prefix)
+{
+	int len, res;
+	EC_KEY *eckey;
+	struct wpabuf *buf;
+	unsigned char *pos;
+
+	eckey = EVP_PKEY_get1_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return NULL;
+	EC_KEY_set_conv_form(eckey, POINT_CONVERSION_UNCOMPRESSED);
+	len = i2o_ECPublicKey(eckey, NULL);
+	if (len <= 0) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to determine public key encoding length");
+		EC_KEY_free(eckey);
+		return NULL;
+	}
+
+	buf = wpabuf_alloc(len);
+	if (!buf) {
+		EC_KEY_free(eckey);
+		return NULL;
+	}
+
+	pos = wpabuf_put(buf, len);
+	res = i2o_ECPublicKey(eckey, &pos);
+	EC_KEY_free(eckey);
+	if (res != len) {
+		wpa_printf(MSG_ERROR,
+			   "OpenSSL: Failed to encode public key (res=%d/%d)",
+			   res, len);
+		wpabuf_free(buf);
+		return NULL;
+	}
+
+	if (!prefix) {
+		/* Remove 0x04 prefix if requested */
+		pos = wpabuf_mhead(buf);
+		os_memmove(pos, pos + 1, len - 1);
+		buf->used--;
+	}
+
+	return buf;
+}
+
+
+const struct crypto_ec_point *
+crypto_ec_key_get_public_key(struct crypto_ec_key *key)
+{
+	const EC_KEY *eckey;
+
+	eckey = EVP_PKEY_get0_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return NULL;
+	return (const struct crypto_ec_point *) EC_KEY_get0_public_key(eckey);
+}
+
+
+const struct crypto_bignum *
+crypto_ec_key_get_private_key(struct crypto_ec_key *key)
+{
+	const EC_KEY *eckey;
+
+	eckey = EVP_PKEY_get0_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return NULL;
+	return (const struct crypto_bignum *) EC_KEY_get0_private_key(eckey);
 }
 
 
@@ -2291,12 +3401,12 @@ struct wpabuf * crypto_ec_key_sign(struct crypto_ec_key *key, const u8 *data,
 	struct wpabuf *sig_der;
 	size_t sig_len;
 
-	sig_len = EVP_PKEY_size(key->pkey);
+	sig_len = EVP_PKEY_size((EVP_PKEY *) key);
 	sig_der = wpabuf_alloc(sig_len);
 	if (!sig_der)
 		return NULL;
 
-	pkctx = EVP_PKEY_CTX_new(key->pkey, NULL);
+	pkctx = EVP_PKEY_CTX_new((EVP_PKEY *) key, NULL);
 	if (!pkctx ||
 	    EVP_PKEY_sign_init(pkctx) <= 0 ||
 	    EVP_PKEY_sign(pkctx, wpabuf_put(sig_der, 0), &sig_len,
@@ -2312,13 +3422,103 @@ struct wpabuf * crypto_ec_key_sign(struct crypto_ec_key *key, const u8 *data,
 }
 
 
+static int openssl_evp_pkey_ec_prime_len(struct crypto_ec_key *key)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	char gname[50];
+	int nid;
+	EC_GROUP *group;
+	BIGNUM *prime = NULL;
+	int prime_len = -1;
+
+	if (EVP_PKEY_get_group_name((EVP_PKEY *) key, gname, sizeof(gname),
+				    NULL) != 1)
+		return -1;
+	nid = OBJ_txt2nid(gname);
+	group = EC_GROUP_new_by_curve_name(nid);
+	prime = BN_new();
+	if (!group || !prime)
+		return -1;
+	if (EC_GROUP_get_curve(group, prime, NULL, NULL, NULL) == 1)
+		prime_len = BN_num_bytes(prime);
+	EC_GROUP_free(group);
+	BN_free(prime);
+	return prime_len;
+#else
+	const EC_GROUP *group;
+	const EC_KEY *eckey;
+	BIGNUM *prime = NULL;
+	int prime_len = -1;
+
+	eckey = EVP_PKEY_get0_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		goto fail;
+	group = EC_KEY_get0_group(eckey);
+	prime = BN_new();
+	if (!prime || !group ||
+	    !EC_GROUP_get_curve(group, prime, NULL, NULL, NULL))
+		goto fail;
+	prime_len = BN_num_bytes(prime);
+fail:
+	BN_free(prime);
+	return prime_len;
+#endif
+}
+
+
+struct wpabuf * crypto_ec_key_sign_r_s(struct crypto_ec_key *key,
+				       const u8 *data, size_t len)
+{
+	ECDSA_SIG *sig = NULL;
+	const BIGNUM *r, *s;
+	u8 *r_buf, *s_buf;
+	struct wpabuf *buf;
+	const unsigned char *p;
+	int prime_len;
+
+	prime_len = openssl_evp_pkey_ec_prime_len(key);
+	if (prime_len < 0)
+		return NULL;
+
+	buf = crypto_ec_key_sign(key, data, len);
+	if (!buf)
+		return NULL;
+
+	/* Extract (r,s) from Ecdsa-Sig-Value */
+
+	p = wpabuf_head(buf);
+	sig = d2i_ECDSA_SIG(NULL, &p, wpabuf_len(buf));
+	if (!sig)
+		goto fail;
+	ECDSA_SIG_get0(sig, &r, &s);
+
+	/* Re-use wpabuf returned by crypto_ec_key_sign() */
+	buf->used = 0;
+	r_buf = wpabuf_put(buf, prime_len);
+	s_buf = wpabuf_put(buf, prime_len);
+	if (crypto_bignum_to_bin((const struct crypto_bignum *) r, r_buf,
+				 prime_len, prime_len) < 0 ||
+	    crypto_bignum_to_bin((const struct crypto_bignum *) s, s_buf,
+				 prime_len, prime_len) < 0)
+		goto fail;
+
+out:
+	ECDSA_SIG_free(sig);
+	return buf;
+fail:
+	wpabuf_clear_free(buf);
+	buf = NULL;
+	goto out;
+}
+
+
 int crypto_ec_key_verify_signature(struct crypto_ec_key *key, const u8 *data,
 				   size_t len, const u8 *sig, size_t sig_len)
 {
 	EVP_PKEY_CTX *pkctx;
 	int ret;
 
-	pkctx = EVP_PKEY_CTX_new(key->pkey, NULL);
+	pkctx = EVP_PKEY_CTX_new((EVP_PKEY *) key, NULL);
 	if (!pkctx || EVP_PKEY_verify_init(pkctx) <= 0) {
 		EVP_PKEY_CTX_free(pkctx);
 		return -1;
@@ -2334,15 +3534,66 @@ int crypto_ec_key_verify_signature(struct crypto_ec_key *key, const u8 *data,
 }
 
 
+int crypto_ec_key_verify_signature_r_s(struct crypto_ec_key *key,
+				       const u8 *data, size_t len,
+				       const u8 *r, size_t r_len,
+				       const u8 *s, size_t s_len)
+{
+	ECDSA_SIG *sig;
+	BIGNUM *r_bn, *s_bn;
+	unsigned char *der = NULL;
+	int der_len;
+	int ret = -1;
+
+	r_bn = BN_bin2bn(r, r_len, NULL);
+	s_bn = BN_bin2bn(s, s_len, NULL);
+	sig = ECDSA_SIG_new();
+	if (!r_bn || !s_bn || !sig || ECDSA_SIG_set0(sig, r_bn, s_bn) != 1)
+		goto fail;
+	r_bn = NULL;
+	s_bn = NULL;
+
+	der_len = i2d_ECDSA_SIG(sig, &der);
+	if (der_len <= 0) {
+		wpa_printf(MSG_DEBUG,
+			   "OpenSSL: Could not DER encode signature");
+		goto fail;
+	}
+
+	ret = crypto_ec_key_verify_signature(key, data, len, der, der_len);
+
+fail:
+	OPENSSL_free(der);
+	BN_free(r_bn);
+	BN_free(s_bn);
+	ECDSA_SIG_free(sig);
+	return ret;
+}
+
+
 int crypto_ec_key_group(struct crypto_ec_key *key)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	char gname[50];
+	int nid;
+
+	if (EVP_PKEY_get_group_name((EVP_PKEY *) key, gname, sizeof(gname),
+				    NULL) != 1)
+		return -1;
+	nid = OBJ_txt2nid(gname);
+#else
+	const EC_KEY *eckey;
 	const EC_GROUP *group;
 	int nid;
 
-	group = EC_KEY_get0_group(key->eckey);
+	eckey = EVP_PKEY_get0_EC_KEY((EVP_PKEY *) key);
+	if (!eckey)
+		return -1;
+	group = EC_KEY_get0_group(eckey);
 	if (!group)
 		return -1;
 	nid = EC_GROUP_get_curve_name(group);
+#endif
 	switch (nid) {
 	case NID_X9_62_prime256v1:
 		return 19;
@@ -2350,8 +3601,474 @@ int crypto_ec_key_group(struct crypto_ec_key *key)
 		return 20;
 	case NID_secp521r1:
 		return 21;
+#ifdef NID_brainpoolP256r1
+	case NID_brainpoolP256r1:
+		return 28;
+#endif /* NID_brainpoolP256r1 */
+#ifdef NID_brainpoolP384r1
+	case NID_brainpoolP384r1:
+		return 29;
+#endif /* NID_brainpoolP384r1 */
+#ifdef NID_brainpoolP512r1
+	case NID_brainpoolP512r1:
+		return 30;
+#endif /* NID_brainpoolP512r1 */
 	}
+	wpa_printf(MSG_ERROR, "OpenSSL: Unsupported curve (nid=%d) in EC key",
+		   nid);
 	return -1;
 }
 
+
+int crypto_ec_key_cmp(struct crypto_ec_key *key1, struct crypto_ec_key *key2)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	if (EVP_PKEY_eq((EVP_PKEY *) key1, (EVP_PKEY *) key2) != 1)
+		return -1;
+#else
+	if (EVP_PKEY_cmp((EVP_PKEY *) key1, (EVP_PKEY *) key2) != 1)
+		return -1;
+#endif
+	return 0;
+}
+
+
+void crypto_ec_key_debug_print(const struct crypto_ec_key *key,
+			       const char *title)
+{
+	BIO *out;
+	size_t rlen;
+	char *txt;
+	int res;
+
+	out = BIO_new(BIO_s_mem());
+	if (!out)
+		return;
+
+	EVP_PKEY_print_private(out, (EVP_PKEY *) key, 0, NULL);
+	rlen = BIO_ctrl_pending(out);
+	txt = os_malloc(rlen + 1);
+	if (txt) {
+		res = BIO_read(out, txt, rlen);
+		if (res > 0) {
+			txt[res] = '\0';
+			wpa_printf(MSG_DEBUG, "%s: %s", title, txt);
+		}
+		os_free(txt);
+	}
+	BIO_free(out);
+}
+
+
+struct wpabuf * crypto_pkcs7_get_certificates(const struct wpabuf *pkcs7)
+{
+#ifdef OPENSSL_IS_BORINGSSL
+	CBS pkcs7_cbs;
+#else /* OPENSSL_IS_BORINGSSL */
+	PKCS7 *p7 = NULL;
+	const unsigned char *p = wpabuf_head(pkcs7);
+#endif /* OPENSSL_IS_BORINGSSL */
+	STACK_OF(X509) *certs;
+	int i, num;
+	BIO *out = NULL;
+	size_t rlen;
+	struct wpabuf *pem = NULL;
+	int res;
+
+#ifdef OPENSSL_IS_BORINGSSL
+	certs = sk_X509_new_null();
+	if (!certs)
+		goto fail;
+	CBS_init(&pkcs7_cbs, wpabuf_head(pkcs7), wpabuf_len(pkcs7));
+	if (!PKCS7_get_certificates(certs, &pkcs7_cbs)) {
+		wpa_printf(MSG_INFO,
+			   "OpenSSL: Could not parse PKCS#7 object: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+#else /* OPENSSL_IS_BORINGSSL */
+	p7 = d2i_PKCS7(NULL, &p, wpabuf_len(pkcs7));
+	if (!p7) {
+		wpa_printf(MSG_INFO,
+			   "OpenSSL: Could not parse PKCS#7 object: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto fail;
+	}
+
+	switch (OBJ_obj2nid(p7->type)) {
+	case NID_pkcs7_signed:
+		certs = p7->d.sign->cert;
+		break;
+	case NID_pkcs7_signedAndEnveloped:
+		certs = p7->d.signed_and_enveloped->cert;
+		break;
+	default:
+		certs = NULL;
+		break;
+	}
+#endif /* OPENSSL_IS_BORINGSSL */
+
+	if (!certs || ((num = sk_X509_num(certs)) == 0)) {
+		wpa_printf(MSG_INFO,
+			   "OpenSSL: No certificates found in PKCS#7 object");
+		goto fail;
+	}
+
+	out = BIO_new(BIO_s_mem());
+	if (!out)
+		goto fail;
+
+	for (i = 0; i < num; i++) {
+		X509 *cert = sk_X509_value(certs, i);
+
+		PEM_write_bio_X509(out, cert);
+	}
+
+	rlen = BIO_ctrl_pending(out);
+	pem = wpabuf_alloc(rlen);
+	if (!pem)
+		goto fail;
+	res = BIO_read(out, wpabuf_put(pem, 0), rlen);
+	if (res <= 0) {
+		wpabuf_free(pem);
+		pem = NULL;
+		goto fail;
+	}
+	wpabuf_put(pem, res);
+
+fail:
+#ifdef OPENSSL_IS_BORINGSSL
+	if (certs)
+		sk_X509_pop_free(certs, X509_free);
+#else /* OPENSSL_IS_BORINGSSL */
+	PKCS7_free(p7);
+#endif /* OPENSSL_IS_BORINGSSL */
+	if (out)
+		BIO_free_all(out);
+
+	return pem;
+}
+
+
+struct crypto_csr * crypto_csr_init()
+{
+	return (struct crypto_csr *)X509_REQ_new();
+}
+
+
+struct crypto_csr * crypto_csr_verify(const struct wpabuf *req)
+{
+	X509_REQ *csr;
+	EVP_PKEY *pkey = NULL;
+	const u8 *der = wpabuf_head(req);
+
+	csr = d2i_X509_REQ(NULL, &der, wpabuf_len(req));
+	if (!csr)
+		return NULL;
+
+	pkey = X509_REQ_get_pubkey((X509_REQ *)csr);
+	if (!pkey)
+		goto fail;
+
+	if (X509_REQ_verify((X509_REQ *)csr, pkey) != 1)
+		goto fail;
+
+	return (struct crypto_csr *)csr;
+fail:
+	X509_REQ_free(csr);
+	return NULL;
+}
+
+
+void crypto_csr_deinit(struct crypto_csr *csr)
+{
+	X509_REQ_free((X509_REQ *)csr);
+}
+
+
+int crypto_csr_set_ec_public_key(struct crypto_csr *csr, struct crypto_ec_key *key)
+{
+	if (!X509_REQ_set_pubkey((X509_REQ *)csr, (EVP_PKEY *)key))
+		return -1;
+
+	return 0;
+}
+
+
+int crypto_csr_set_name(struct crypto_csr *csr, enum crypto_csr_name type,
+			const char *name)
+{
+	X509_NAME *n;
+	int nid;
+
+	switch (type) {
+	case CSR_NAME_CN:
+		nid = NID_commonName;
+		break;
+	case CSR_NAME_SN:
+		nid = NID_surname;
+		break;
+	case CSR_NAME_C:
+		nid = NID_countryName;
+		break;
+	case CSR_NAME_O:
+		nid = NID_organizationName;
+		break;
+	case CSR_NAME_OU:
+		nid = NID_organizationalUnitName;
+		break;
+	default:
+		return -1;
+	}
+
+	n = X509_REQ_get_subject_name((X509_REQ *) csr);
+	if (!n)
+		return -1;
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+	if (!X509_NAME_add_entry_by_NID(n, nid, MBSTRING_UTF8,
+					(unsigned char *) name,
+					os_strlen(name), -1, 0))
+		return -1;
+#else
+	if (!X509_NAME_add_entry_by_NID(n, nid, MBSTRING_UTF8,
+					(const unsigned char *) name,
+					os_strlen(name), -1, 0))
+		return -1;
+#endif
+
+	return 0;
+}
+
+
+int crypto_csr_set_attribute(struct crypto_csr *csr, enum crypto_csr_attr attr,
+			     int attr_type, const u8 *value, size_t len)
+{
+	int nid;
+
+	switch (attr) {
+	case CSR_ATTR_CHALLENGE_PASSWORD:
+		nid = NID_pkcs9_challengePassword;
+		break;
+	default:
+		return -1;
+	}
+
+	if (!X509_REQ_add1_attr_by_NID((X509_REQ *) csr, nid, attr_type, value,
+				       len))
+		return -1;
+
+	return 0;
+}
+
+
+const u8 * crypto_csr_get_attribute(struct crypto_csr *csr,
+				    enum crypto_csr_attr attr,
+				    size_t *len, int *type)
+{
+	X509_ATTRIBUTE *attrib;
+	ASN1_TYPE *attrib_type;
+	ASN1_STRING *data;
+	int loc;
+	int nid;
+
+	switch (attr) {
+	case CSR_ATTR_CHALLENGE_PASSWORD:
+		nid = NID_pkcs9_challengePassword;
+		break;
+	default:
+		return NULL;
+	}
+
+	loc = X509_REQ_get_attr_by_NID((X509_REQ *) csr, nid, -1);
+	if (loc < 0)
+		return NULL;
+
+	attrib = X509_REQ_get_attr((X509_REQ *) csr, loc);
+	if (!attrib)
+		return NULL;
+
+	attrib_type = X509_ATTRIBUTE_get0_type(attrib, 0);
+	if (!attrib_type)
+		return NULL;
+	*type = ASN1_TYPE_get(attrib_type);
+	data = X509_ATTRIBUTE_get0_data(attrib, 0, *type, NULL);
+	if (!data)
+		return NULL;
+	*len = ASN1_STRING_length(data);
+	return ASN1_STRING_get0_data(data);
+}
+
+
+struct wpabuf * crypto_csr_sign(struct crypto_csr *csr,
+				struct crypto_ec_key *key,
+				enum crypto_hash_alg algo)
+{
+	const EVP_MD *sign_md;
+	struct wpabuf *buf;
+	unsigned char *der = NULL;
+	int der_len;
+
+	switch (algo) {
+	case CRYPTO_HASH_ALG_SHA256:
+		sign_md = EVP_sha256();
+		break;
+	case CRYPTO_HASH_ALG_SHA384:
+		sign_md = EVP_sha384();
+		break;
+	case CRYPTO_HASH_ALG_SHA512:
+		sign_md = EVP_sha512();
+		break;
+	default:
+		return NULL;
+	}
+
+	if (!X509_REQ_sign((X509_REQ *) csr, (EVP_PKEY *) key, sign_md))
+		return NULL;
+
+	der_len = i2d_X509_REQ((X509_REQ *) csr, &der);
+	if (der_len < 0)
+		return NULL;
+
+	buf = wpabuf_alloc_copy(der, der_len);
+	OPENSSL_free(der);
+
+	return buf;
+}
+
 #endif /* CONFIG_ECC */
+
+
+static EVP_PKEY * crypto_rsa_key_read_public(FILE *f)
+{
+	EVP_PKEY *pkey;
+	X509 *x509;
+
+	pkey = PEM_read_PUBKEY(f, NULL, NULL, NULL);
+	if (pkey)
+		return pkey;
+
+	rewind(f);
+	x509 = PEM_read_X509(f, NULL, NULL, NULL);
+	if (!x509)
+		return NULL;
+
+	pkey = X509_get_pubkey(x509);
+	X509_free(x509);
+
+	if (!pkey)
+		return NULL;
+	if (EVP_PKEY_base_id(pkey) != EVP_PKEY_RSA) {
+		EVP_PKEY_free(pkey);
+		return NULL;
+	}
+
+	return pkey;
+}
+
+
+struct crypto_rsa_key * crypto_rsa_key_read(const char *file, bool private_key)
+{
+	FILE *f;
+	EVP_PKEY *pkey;
+
+	f = fopen(file, "r");
+	if (!f)
+		return NULL;
+	if (private_key)
+		pkey = PEM_read_PrivateKey(f, NULL, NULL, NULL);
+	else
+		pkey = crypto_rsa_key_read_public(f);
+	fclose(f);
+	return (struct crypto_rsa_key *) pkey;
+}
+
+
+#ifndef OPENSSL_NO_SHA256
+
+struct wpabuf * crypto_rsa_oaep_sha256_encrypt(struct crypto_rsa_key *key,
+					       const struct wpabuf *in)
+{
+#if !defined(LIBRESSL_VERSION_NUMBER) || LIBRESSL_VERSION_NUMBER >= 0x30400000L
+	EVP_PKEY *pkey = (EVP_PKEY *) key;
+	EVP_PKEY_CTX *pkctx;
+	struct wpabuf *res = NULL;
+	size_t outlen;
+
+	pkctx = EVP_PKEY_CTX_new(pkey, NULL);
+	if (!pkctx)
+		goto fail;
+
+	if (EVP_PKEY_encrypt_init(pkctx) != 1 ||
+	    EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_OAEP_PADDING) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_oaep_md(pkctx, EVP_sha256()) <= 0 ||
+	    EVP_PKEY_encrypt(pkctx, NULL, &outlen, wpabuf_head(in),
+			     wpabuf_len(in)) != 1 ||
+	    !(res = wpabuf_alloc(outlen)) ||
+	    EVP_PKEY_encrypt(pkctx, wpabuf_put(res, 0), &outlen,
+			     wpabuf_head(in), wpabuf_len(in)) != 1) {
+		wpabuf_free(res);
+		res = NULL;
+		goto fail;
+	}
+	wpabuf_put(res, outlen);
+
+fail:
+	EVP_PKEY_CTX_free(pkctx);
+	return res;
+#else
+	wpa_printf(MSG_ERROR, "%s() not supported", __func__);
+	return NULL;
+#endif
+}
+
+
+struct wpabuf * crypto_rsa_oaep_sha256_decrypt(struct crypto_rsa_key *key,
+					       const struct wpabuf *in)
+{
+#if !defined(LIBRESSL_VERSION_NUMBER) || LIBRESSL_VERSION_NUMBER >= 0x30400000L
+	EVP_PKEY *pkey = (EVP_PKEY *) key;
+	EVP_PKEY_CTX *pkctx;
+	struct wpabuf *res = NULL;
+	size_t outlen;
+
+	pkctx = EVP_PKEY_CTX_new(pkey, NULL);
+	if (!pkctx)
+		goto fail;
+
+	if (EVP_PKEY_decrypt_init(pkctx) != 1 ||
+	    EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_OAEP_PADDING) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_oaep_md(pkctx, EVP_sha256()) <= 0 ||
+	    EVP_PKEY_decrypt(pkctx, NULL, &outlen, wpabuf_head(in),
+			     wpabuf_len(in)) != 1 ||
+	    !(res = wpabuf_alloc(outlen)) ||
+	    EVP_PKEY_decrypt(pkctx, wpabuf_put(res, 0), &outlen,
+			     wpabuf_head(in), wpabuf_len(in)) != 1) {
+		wpabuf_free(res);
+		res = NULL;
+		goto fail;
+	}
+	wpabuf_put(res, outlen);
+
+fail:
+	EVP_PKEY_CTX_free(pkctx);
+	return res;
+#else
+	wpa_printf(MSG_ERROR, "%s() not supported", __func__);
+	return NULL;
+#endif
+}
+
+#endif /* OPENSSL_NO_SHA256 */
+
+
+void crypto_rsa_key_free(struct crypto_rsa_key *key)
+{
+	EVP_PKEY_free((EVP_PKEY *) key);
+}
+
+
+void crypto_unload(void)
+{
+	openssl_unload_legacy_provider();
+}
