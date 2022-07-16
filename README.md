@@ -25,6 +25,36 @@ Now compile `wpa_supplicant`:
 	make -j 2
 	cd ..
 
+# Example WPA3 configurations
+
+### Access Point
+
+See [hostapd/hostapd_wpa3.conf](hostapd/hostapd_wpa3.conf):
+```
+interface=wlan0
+ssid=WPA3-Network
+
+hw_mode=g
+channel=1
+
+wpa=2
+wpa_passphrase=abcdefgh
+wpa_key_mgmt=SAE
+rsn_pairwise=CCMP
+ieee80211w=2
+```
+
+### Client
+
+See [wpa_supplicant/supp_wpa3.conf](wpa_supplicant/supp_wpa3.conf):
+```
+network={
+	ssid="WPA3-Network"
+	psk="abcdefgh"
+	key_mgmt=SAE
+	ieee80211w=2
+}
+```
 
 # Configuring SAE-PK
 
@@ -48,7 +78,7 @@ Example output:
 	# 2udb-slxf-3ijn-y65x-vr2i-6qob
 	...
 
-The example config files `hostapd_sae_pk.conf` and `supp_saepk.conf` can be used to create the SAE-PK network.
+The example config files [`hostapd_sae_pk.conf`](hostapd/hostapd_sae_pk.conf) and [`supp_saepk.conf`](wpa_supplicant/supp_saepk.conf) can be used to create the SAE-PK network.
 
 
 # Testing Using Virtual Interface
